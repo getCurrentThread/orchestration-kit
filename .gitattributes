@@ -1,2 +1,2 @@
-# Store every file exactly as written, so vendor/mogui stays byte-identical to upstream.
+# Store every file exactly as written: vendor/mogui stays byte-identical to upstream, and harness/ stays LF.
 * -text

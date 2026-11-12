@@ -1,5 +1,5 @@
 {
   "name": "orchestration-kit",
-  "version": "0.1.0",
-  "description": "Gated worker dispatch, master succession and a review workflow on top of the Orca CLI, reassembled for Windows from baksohyeon/mogui-ADE-orchestrator."
+  "version": "0.2.0",
+  "description": "Gated worker dispatch, master succession and a review workflow on top of the Orca CLI, plus an installer for the repository harness, reassembled for Windows from baksohyeon/mogui-ADE-orchestrator and baksohyeon/mogui-agent-harness."
 }

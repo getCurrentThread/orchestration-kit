@@ -1,0 +1,73 @@
+{
+  "_comment": "Codex hook config template. Copy to .codex/hooks.json for local use (hooks.json is gitignored).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/hooks/no-emoji-check.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v code-review-graph >/dev/null 2>&1 || exit 0; PYTHONUTF8=1 code-review-graph update --skip-flows",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v code-review-graph >/dev/null 2>&1 || exit 0; code-review-graph status 2>&1 || echo 'code-review-graph: no status. If the line above says that no graph was found, the first Edit, Write or Bash call builds it, or build it now with: code-review-graph build'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": ".codex/hooks/setup-check.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": ".codex/hooks/memory-health.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": ".codex/hooks/load-context.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash .codex/hooks/wiki-health.sh",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/hooks/memory-selfcheck.sh",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

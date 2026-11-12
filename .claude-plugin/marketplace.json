@@ -5,7 +5,7 @@
     {
       "name": "orchestration-kit",
       "source": "./",
-      "description": "Gated worker dispatch, master succession and a review workflow on top of the Orca CLI."
+      "description": "Gated worker dispatch, master succession and a review workflow on top of the Orca CLI, plus an installer for the repository harness."
     }
   ]
 }
