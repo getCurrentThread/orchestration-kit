@@ -1,0 +1,790 @@
+"""Worker reap lifecycle: close settled dispatch terminals and clean up worktrees.
+
+Exit codes:
+- 2: invalid invocation or unresolved dispatch lookup
+- 3: dispatch exists but is not settled
+- 4: malformed JSON payload from orchestration RPC
+- 5: no dispatch exists for the requested task
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import time
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Optional
+
+
+# Agent CLI comm names worth refusing a reap over — a live process here means
+# a worker (or someone) is still actively sitting in this worktree, settled
+# dispatch or not. Matched by basename, case-insensitively.
+# ponytail: exact-name set, not a "looks like an agent" heuristic — a comm
+# reported as a wrapper (e.g. `node` fronting a JS-packaged CLI) is not
+# chased. Add a name here once it is measured on a real seat, not guessed.
+AGENT_CLI_COMMANDS = frozenset(
+    {"claude", "codex", "cursor", "cursor-agent", "agy", "grok"}
+)
+
+# Rendered media suffixes a worktree's .gitignore commonly covers. `git
+# status --porcelain` never lists ignored files, so a worktree holding one of
+# these loses it silently to `git worktree remove` unless this set catches it
+# first. Matched by suffix, case-insensitively.
+IGNORED_MEDIA_SUFFIXES = frozenset(
+    {
+        ".mp4",
+        ".webm",
+        ".mov",
+        ".mkv",
+        ".wav",
+        ".mp3",
+        ".flac",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".pdf",
+    }
+)
+
+MAX_WORKER_LIST_PAGES = 20
+WORKER_LIST_PAGE_LIMIT = 100
+
+# Dropped from every subprocess env: an inherited value here would point git
+# at the caller's repository (or its index/object store) instead of the one
+# named by -C.
+GIT_REPOSITORY_ENV_VARS = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ReapRecord:
+    """One dispatch reap event in the ledger."""
+
+    task_id: str
+    dispatch_id: str
+    terminal_id: str
+    worktree_path: Optional[str]
+    actions_taken: str
+    timestamp: float
+    measurements: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "task_id": self.task_id,
+            "dispatch_id": self.dispatch_id,
+            "terminal_id": self.terminal_id,
+            "worktree_path": self.worktree_path,
+            "actions_taken": self.actions_taken,
+            "timestamp": self.timestamp,
+            "measurements": self.measurements,
+        }
+
+
+class ReapError(Exception):
+    """Reap operation failed."""
+
+    def __init__(self, message: str, exit_code: int = 1) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+EXIT_NO_SUCH_TASK = 5
+
+
+class DispatchState:
+    """Parsed dispatch state from orca orchestration dispatch-show."""
+
+    def __init__(self, dispatch_json: dict) -> None:
+        self.raw = dispatch_json
+        dispatch_payload = dispatch_json
+        if isinstance(dispatch_json.get("result"), dict):
+            wrapped_dispatch = dispatch_json["result"].get("dispatch")
+            if isinstance(wrapped_dispatch, dict):
+                dispatch_payload = wrapped_dispatch
+            else:
+                dispatch_payload = {}
+
+        dispatch_id = dispatch_payload.get("dispatch_id") or dispatch_payload.get("id")
+        if not dispatch_id:
+            raise ReapError("Dispatch payload is missing dispatch_id/id", 4)
+
+        self.dispatch_id = str(dispatch_id)
+        self.task_id = str(dispatch_payload.get("task_id") or "")
+        self.terminal_id = str(
+            dispatch_payload.get("assignee_handle")
+            or dispatch_payload.get("terminal_id")
+            or ""
+        )
+        self.status = str(dispatch_payload.get("status", "")).upper()
+        derived_worktree_path = self._derive_worktree_path(
+            dispatch_payload.get("process_incarnation")
+        )
+        flat_worktree_path = dispatch_payload.get("worktree_path")
+        self.worktree_path = (
+            derived_worktree_path
+            if derived_worktree_path is not None
+            else (
+                flat_worktree_path
+                if isinstance(flat_worktree_path, str)
+                and self._is_absolute_path(flat_worktree_path)
+                else None
+            )
+        )
+
+    def is_settled(self) -> bool:
+        """True if dispatch is in a terminal state (completed/accepted/failed/abandoned)."""
+        return self.status in ("COMPLETED", "ACCEPTED", "FAILED", "ABANDONED")
+
+    def is_success(self) -> bool:
+        """True if dispatch completed or was accepted."""
+        return self.status in ("COMPLETED", "ACCEPTED")
+
+    def _derive_worktree_path(self, process_incarnation: object) -> Optional[str]:
+        """Extract absolute worktree path from process_incarnation when present."""
+        if not isinstance(process_incarnation, str):
+            return None
+
+        match = re.fullmatch(r"[^:]+::(.+)@@.+", process_incarnation)
+        if not match:
+            return None
+
+        path = match.group(1)
+        if not self._is_absolute_path(path):
+            return None
+        return path
+
+    def _is_absolute_path(self, path: str) -> bool:
+        """True when path is absolute in either posix or windows form."""
+        return PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()
+
+
+def find_worker_row_for_dispatch(workers: list, dispatch_id: str) -> Optional[dict]:
+    """The worker-list row naming this dispatch id (snake_case or camelCase),
+    `None` when no row matches. Shared by `WorkerReaper` and
+    `dispatch_timeline` so both resolve a dispatch id to a task id the same
+    way."""
+    for worker in workers:
+        if not isinstance(worker, dict):
+            continue
+        row_dispatch_id = worker.get("dispatch_id") or worker.get("dispatchId")
+        if row_dispatch_id == dispatch_id:
+            return worker
+    return None
+
+
+def resolve_task_id_from_dispatch_id(
+    orca_runner: callable, dispatch_id: str
+) -> Optional[str]:
+    """Resolve a dispatch id to its task id via `orca orchestration
+    worker-list`, the same lookup `WorkerReaper` uses. `None` on any failure
+    — RPC error, malformed JSON, no matching row, or a matching row with no
+    task_id — never raises."""
+    code, stdout, _stderr = orca_runner(["orca", "orchestration", "worker-list", "--json"])
+    if code != 0:
+        return None
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    result = payload.get("result") if isinstance(payload, dict) else None
+    workers = result.get("workers") if isinstance(result, dict) else None
+    if not isinstance(workers, list):
+        return None
+    row = find_worker_row_for_dispatch(workers, dispatch_id)
+    if row is None:
+        return None
+    task_id = row.get("task_id") or row.get("taskId")
+    return str(task_id) if task_id else None
+
+
+class WorkerReaper:
+    """Closes settled worker terminals and cleans up worktrees."""
+
+    def __init__(
+        self,
+        orca_runner: Optional[callable] = None,
+        reap_ledger_path: Optional[Path] = None,
+        remove_ignored_media: bool = False,
+    ) -> None:
+        self.orca_runner = orca_runner or self._run_subprocess
+        self.reap_ledger_path = reap_ledger_path
+        self.remove_ignored_media = remove_ignored_media
+
+    def reap(
+        self,
+        task_id: Optional[str] = None,
+        dispatch_id: Optional[str] = None,
+        execute: bool = True,
+        remove_ignored_media: bool = False,
+    ) -> ReapRecord:
+        """
+        Reap a settled dispatch.
+
+        Args:
+            task_id: Task ID to look up (or dispatch_id must be provided)
+            dispatch_id: Dispatch ID directly (or task_id must be provided)
+            execute: If False, dry-run only
+            remove_ignored_media: If True (here or on the instance), remove
+                a clean, merged worktree even when it holds ignored media
+
+        Returns:
+            ReapRecord with actions taken
+
+        Raises:
+            ReapError if dispatch is not settled or reap fails
+        """
+        if not task_id and not dispatch_id:
+            raise ReapError("Either task_id or dispatch_id must be provided", 2)
+
+        # Fetch dispatch state
+        dispatch_state = self._fetch_dispatch(task_id, dispatch_id)
+
+        # Verify settled
+        if not dispatch_state.is_settled():
+            raise ReapError(
+                f"Dispatch {dispatch_state.dispatch_id} is not settled "
+                f"(status: {dispatch_state.status}); refusing to reap open dispatch",
+                3,
+            )
+
+        actions = []
+        measurements: dict[str, object] = {}
+
+        # Close the pane only when all three measurements clear it.
+        if dispatch_state.terminal_id:
+            action, terminal_measurements = self._plan_terminal_action(
+                dispatch_state, execute
+            )
+            actions.append(action)
+            measurements.update(terminal_measurements)
+
+        # Check and possibly remove worktree
+        if dispatch_state.worktree_path:
+            worktree_path = Path(dispatch_state.worktree_path)
+            try:
+                wt_clean, wt_merged, reason = self._check_worktree_safe_to_remove(
+                    worktree_path
+                )
+                measurements["worktree_clean"] = wt_clean
+                measurements["worktree_merged"] = wt_merged
+                if wt_clean and wt_merged:
+                    ignored_media = self._ignored_media(worktree_path)
+                    measurements["worktree_ignored_media"] = (
+                        None if ignored_media is None else len(ignored_media)
+                    )
+                    if ignored_media is None:
+                        actions.append(
+                            f"worktree_left:{worktree_path}:ignored_media_unmeasured"
+                        )
+                    elif ignored_media and not (
+                        remove_ignored_media or self.remove_ignored_media
+                    ):
+                        actions.append(
+                            f"worktree_left:{worktree_path}:ignored_media:"
+                            f"{len(ignored_media)}"
+                        )
+                    elif execute:
+                        self._remove_worktree(worktree_path)
+                        actions.append(f"worktree_removed:{worktree_path}")
+                    else:
+                        actions.append(f"would_remove_worktree:{worktree_path}")
+                else:
+                    actions.append(f"worktree_left:{worktree_path}:{reason}")
+            except Exception as e:
+                measurements["worktree_clean"] = None
+                measurements["worktree_merged"] = None
+                actions.append(f"worktree_left:{worktree_path}:Check failed: {e}")
+
+        # Build record
+        record = ReapRecord(
+            task_id=dispatch_state.task_id,
+            dispatch_id=dispatch_state.dispatch_id,
+            terminal_id=dispatch_state.terminal_id,
+            worktree_path=dispatch_state.worktree_path,
+            actions_taken=";".join(actions),
+            timestamp=time.time(),
+            measurements=measurements,
+        )
+
+        # Append to ledger
+        if execute and self.reap_ledger_path:
+            self._append_reap_record(record)
+
+        return record
+
+    def _plan_terminal_action(
+        self, dispatch_state: DispatchState, execute: bool
+    ) -> tuple[str, dict[str, object]]:
+        """Measure the three pane preconditions and decide the terminal action.
+
+        A pane is closed only when all three hold: present in `orca terminal
+        list`, not claimed by any currently-`dispatched` worker-list row, and
+        no agent CLI process's cwd is inside the dispatch's worktree. A
+        measurement that could not be taken (`None`) refuses, the same as a
+        measurement that failed — a refusal is cheap, a wrong close is not.
+        """
+
+        terminal_id = dispatch_state.terminal_id
+        measurements: dict[str, object] = {}
+
+        present = self._terminal_present(terminal_id)
+        measurements["terminal_present"] = present
+        if present is None:
+            return f"terminal_left:{terminal_id}:presence_unmeasured", measurements
+        if not present:
+            return f"terminal_left:{terminal_id}:pane_absent", measurements
+
+        reused_by = self._reused_by_dispatched(terminal_id, dispatch_state.dispatch_id)
+        measurements["terminal_reused_by"] = reused_by
+        if reused_by is None:
+            return f"terminal_left:{terminal_id}:reuse_unmeasured", measurements
+        if reused_by:
+            return f"terminal_left:{terminal_id}:reused_by:{reused_by}", measurements
+
+        if not dispatch_state.worktree_path:
+            measurements["agent_process"] = None
+            return f"terminal_left:{terminal_id}:worktree_unknown_for_agent_check", measurements
+
+        agent_process = self._agent_process_in_worktree(Path(dispatch_state.worktree_path))
+        measurements["agent_process"] = agent_process
+        if agent_process is None:
+            return f"terminal_left:{terminal_id}:agent_process_unmeasured", measurements
+        if agent_process:
+            return f"terminal_left:{terminal_id}:agent_process:{agent_process}", measurements
+
+        if execute:
+            self._close_terminal(terminal_id)
+            return f"terminal_closed:{terminal_id}", measurements
+        return f"would_close_terminal:{terminal_id}", measurements
+
+    def _terminal_present(self, terminal_id: str) -> Optional[bool]:
+        """`None` when presence could not be measured — never read as absent."""
+
+        code, stdout, _stderr = self.orca_runner(["orca", "terminal", "list", "--json"])
+        if code != 0:
+            return None
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError:
+            return None
+        result = payload.get("result") if isinstance(payload, dict) else None
+        terminals = result.get("terminals") if isinstance(result, dict) else None
+        if not isinstance(terminals, list):
+            return None
+        handles = {t.get("handle") for t in terminals if isinstance(t, dict)}
+        return terminal_id in handles
+
+    def _reused_by_dispatched(
+        self, terminal_id: str, own_dispatch_id: str
+    ) -> Optional[str]:
+        """The reusing dispatch id, `""` when not reused, `None` when unmeasured."""
+
+        rows = self._all_worker_list_rows()
+        if rows is None:
+            return None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            handle = (
+                row.get("agentTerminalHandle")
+                or row.get("assignee_handle")
+                or row.get("terminal_id")
+            )
+            if handle != terminal_id:
+                continue
+            status = str(row.get("dispatchStatus") or row.get("status") or "").lower()
+            if status != "dispatched":
+                continue
+            row_dispatch_id = row.get("dispatchId") or row.get("dispatch_id")
+            if row_dispatch_id == own_dispatch_id:
+                continue
+            return str(row_dispatch_id) if row_dispatch_id else "unknown"
+        return ""
+
+    def _all_worker_list_rows(self) -> Optional[list[dict]]:
+        """Every worker-list row across every Run, paginated. `None` on a
+        malformed shape or when pagination cannot finish (`hasMore` with no
+        cursor, or the page limit exhausted) — a partial list is unmeasurable,
+        never "no reuse"."""
+
+        rows: list[dict] = []
+        cursor: Optional[str] = None
+        for page_index in range(MAX_WORKER_LIST_PAGES):
+            cmd = [
+                "orca",
+                "orchestration",
+                "worker-list",
+                "--limit",
+                str(WORKER_LIST_PAGE_LIMIT),
+                "--json",
+            ]
+            if cursor:
+                cmd.extend(["--cursor", cursor])
+            code, stdout, _stderr = self.orca_runner(cmd)
+            if code != 0:
+                return None
+            try:
+                payload = json.loads(stdout)
+            except json.JSONDecodeError:
+                return None
+            result = payload.get("result") if isinstance(payload, dict) else None
+            if not isinstance(result, dict):
+                return None
+            workers = result.get("workers")
+            if not isinstance(workers, list) or not all(
+                isinstance(row, dict) for row in workers
+            ):
+                return None
+            rows.extend(workers)
+            page = result.get("page")
+            if not isinstance(page, dict):
+                return None
+            cursor = page.get("nextCursor")
+            if page.get("hasMore"):
+                if not cursor or page_index == MAX_WORKER_LIST_PAGES - 1:
+                    return None
+            else:
+                break
+        return rows
+
+    def _agent_process_in_worktree(self, worktree_path: Path) -> Optional[str]:
+        """`"<pid>:<comm>"` for the first agent CLI found, `""` when none,
+        `None` when unmeasured — including when an agent-matching process's
+        cwd could not be resolved at all, not just when the scan itself fails."""
+
+        code, stdout, _stderr = self.orca_runner(["ps", "-axo", "pid=,comm="])
+        if code != 0:
+            return None
+        target = os.path.realpath(str(worktree_path))
+        unmeasured = False
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            pid_str, comm = parts
+            comm_name = os.path.basename(comm.strip()).lower()
+            if comm_name not in AGENT_CLI_COMMANDS:
+                continue
+            cwd = self._process_cwd(pid_str)
+            if not cwd:
+                unmeasured = True
+                continue
+            resolved_cwd = os.path.realpath(cwd)
+            if resolved_cwd == target or resolved_cwd.startswith(target + os.sep):
+                return f"{pid_str}:{comm_name}"
+        return None if unmeasured else ""
+
+    def _process_cwd(self, pid: str) -> Optional[str]:
+        """`lsof` first (the contract's primary tool), `/proc/<pid>/cwd` as fallback."""
+
+        code, stdout, _stderr = self.orca_runner(
+            ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"]
+        )
+        if code == 0:
+            for line in stdout.splitlines():
+                if line.startswith("n"):
+                    return line[1:]
+        code, stdout, _stderr = self.orca_runner(["readlink", f"/proc/{pid}/cwd"])
+        if code == 0 and stdout.strip():
+            return stdout.strip()
+        return None
+
+    def _fetch_dispatch(
+        self, task_id: Optional[str], dispatch_id: Optional[str]
+    ) -> DispatchState:
+        """Fetch dispatch state via orca orchestration dispatch-show."""
+        lookup_task_id = task_id
+        if not lookup_task_id and dispatch_id:
+            lookup_task_id = self._resolve_task_id_from_dispatch_id(dispatch_id)
+
+        cmd = ["orca", "orchestration", "dispatch-show", "--json"]
+        if lookup_task_id:
+            cmd.extend(["--task", lookup_task_id])
+
+        code, stdout, stderr = self.orca_runner(cmd)
+        if code != 0:
+            raise ReapError(
+                f"Failed to fetch dispatch: {stderr or stdout}",
+                code,
+            )
+
+        try:
+            payload = json.loads(stdout)
+            result = payload.get("result") if isinstance(payload, dict) else None
+            if isinstance(result, dict):
+                dispatch_payload = result.get("dispatch")
+                if not isinstance(dispatch_payload, dict):
+                    if dispatch_id and not task_id and lookup_task_id:
+                        raise ReapError(
+                            f"no dispatch for task {lookup_task_id}",
+                            EXIT_NO_SUCH_TASK,
+                        )
+                    if lookup_task_id:
+                        raise ReapError(
+                            f"no such task: {lookup_task_id}",
+                            EXIT_NO_SUCH_TASK,
+                        )
+                    raise ReapError("no such task", EXIT_NO_SUCH_TASK)
+            return DispatchState(payload)
+        except (json.JSONDecodeError, ValueError) as e:
+            raise ReapError(f"Could not parse dispatch JSON: {e}", 4)
+
+    def _resolve_task_id_from_dispatch_id(self, dispatch_id: str) -> str:
+        """Resolve task ID from dispatch ID using worker-list rows."""
+        code, stdout, stderr = self.orca_runner(
+            ["orca", "orchestration", "worker-list", "--json"]
+        )
+        if code != 0:
+            raise ReapError(
+                f"Failed to resolve dispatch via worker-list: {stderr or stdout}",
+                code,
+            )
+
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            raise ReapError(f"Could not parse worker-list JSON: {exc}", 4)
+
+        result = payload.get("result") if isinstance(payload, dict) else None
+        workers = result.get("workers") if isinstance(result, dict) else None
+        if not isinstance(workers, list):
+            workers = []
+
+        row = find_worker_row_for_dispatch(workers, dispatch_id)
+        if row is None:
+            raise ReapError(
+                f"Could not resolve dispatch {dispatch_id}: worker-list had no row for it",
+                2,
+            )
+        task_id = row.get("task_id") or row.get("taskId")
+        if task_id:
+            return str(task_id)
+        raise ReapError(
+            f"worker-list row for dispatch {dispatch_id} has no task_id",
+            2,
+        )
+
+    def _close_terminal(self, terminal_id: str) -> None:
+        """Close a terminal via orca terminal close."""
+        code, stdout, stderr = self.orca_runner(
+            ["orca", "terminal", "close", "--terminal", terminal_id]
+        )
+        if code != 0:
+            raise ReapError(f"Failed to close terminal {terminal_id}: {stderr}", code)
+
+    def _check_worktree_safe_to_remove(self, worktree_path: Path) -> tuple[bool, bool, str]:
+        """
+        Check if worktree can be safely removed.
+
+        Returns:
+            (is_clean, is_merged, reason_if_not)
+        """
+        if not worktree_path.exists():
+            return False, False, f"Worktree path does not exist"
+
+        # Check git status
+        code, stdout, stderr = self.orca_runner(
+            ["git", "-C", str(worktree_path), "status", "--porcelain"]
+        )
+        if code != 0:
+            return False, False, f"Not a git repo or git error: {stderr}"
+
+        # __pycache__ litter does not count as dirty: .gitignore already
+        # covers it everywhere this runs, but a stray untracked copy (a
+        # worktree created before .gitignore existed, or copied by hand)
+        # should not by itself block an otherwise-clean removal.
+        dirty_lines = [
+            line
+            for line in stdout.splitlines()
+            if line.strip()
+            and not (line.startswith("?? ") and "__pycache__/" in line[3:])
+        ]
+        if dirty_lines:
+            return False, False, f"Worktree has uncommitted changes"
+
+        # Get current branch
+        code, branch_output, stderr = self.orca_runner(
+            ["git", "-C", str(worktree_path), "branch", "--show-current"]
+        )
+        if code != 0:
+            return False, False, f"Could not get current branch: {stderr}"
+
+        current_branch = branch_output.strip()
+        if not current_branch:
+            return False, False, "Could not get current branch: detached HEAD"
+
+        # Check if branch is topologically merged.
+        code, stdout, stderr = self.orca_runner(
+            ["git", "-C", str(worktree_path), "branch", "-a", "--merged", "origin/main"]
+        )
+        if code != 0:
+            return False, False, f"Could not check merge status: {stderr}"
+
+        merged_branches = [
+            line.strip().lstrip("* ")
+            for line in stdout.strip().split("\n")
+            if line.strip()
+        ]
+
+        if current_branch in merged_branches:
+            return True, True, ""
+
+        squash_included, squash_reason = self._branch_changes_included_in_origin_main(
+            worktree_path
+        )
+        if squash_included:
+            return True, True, ""
+
+        return False, False, (
+            f"Current branch {current_branch} is not merged to origin/main"
+            f" ({squash_reason})"
+        )
+
+    def _ignored_media(self, worktree_path: Path) -> Optional[list[str]]:
+        """Ignored paths under `worktree_path` whose suffix is in
+        `IGNORED_MEDIA_SUFFIXES` (case-insensitive), from `git status
+        --porcelain --ignored --untracked-files=all -z`'s `!! ` records.
+        `--untracked-files=all` makes git list individual files inside an
+        ignored directory (e.g. `renders/`) instead of just the directory;
+        `-z` delimits each record with NUL instead of a trailing newline and
+        never quotes the path, so a path with a space or a non-ASCII name
+        comes through intact. `None` on a git failure, never read as "no
+        ignored media"."""
+        code, stdout, _stderr = self.orca_runner(
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "status",
+                "--porcelain",
+                "--ignored",
+                "--untracked-files=all",
+                "-z",
+            ]
+        )
+        if code != 0:
+            return None
+        return [
+            record[3:]
+            for record in stdout.split("\0")
+            if record.startswith("!! ")
+            and Path(record[3:]).suffix.lower() in IGNORED_MEDIA_SUFFIXES
+        ]
+
+    def _branch_changes_included_in_origin_main(
+        self, worktree_path: Path
+    ) -> tuple[bool, str]:
+        """
+        True when merging HEAD into origin/main would leave origin/main unchanged.
+
+        Squash merges erase ancestry, so `git branch --merged origin/main` cannot
+        prove inclusion. A virtual merge tree catches both normal no-op merges and
+        aggregate squash commits while leaving conflicts or new tree changes unsafe.
+        """
+        code, main_tree_stdout, stderr = self.orca_runner(
+            ["git", "-C", str(worktree_path), "rev-parse", "origin/main^{tree}"]
+        )
+        if code != 0:
+            return False, f"could not resolve origin/main tree: {stderr}"
+
+        code, merge_tree_stdout, stderr = self.orca_runner(
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "merge-tree",
+                "--write-tree",
+                "origin/main",
+                "HEAD",
+            ]
+        )
+        if code != 0:
+            return False, f"virtual merge failed: {stderr or merge_tree_stdout}"
+
+        main_tree = main_tree_stdout.strip()
+        merge_tree = merge_tree_stdout.splitlines()[0].strip() if merge_tree_stdout else ""
+        if merge_tree == main_tree:
+            return True, "branch changes are already included in origin/main"
+
+        return False, "branch changes are not included in origin/main"
+
+    def _remove_worktree(self, worktree_path: Path) -> None:
+        """Remove a worktree safely."""
+        # Resolve the shared git dir, then remove through --git-dir. The remove
+        # must not run with the worktree as git's cwd: Windows cannot delete a
+        # process's current directory. It also must not depend on the caller's cwd.
+        # --path-format=absolute needs Git 2.31+, which this project does not
+        # require, so resolve the (possibly relative) default output ourselves
+        # against the -C directory the command ran in.
+        code, stdout, stderr = self.orca_runner(
+            ["git", "-C", str(worktree_path), "rev-parse", "--git-common-dir"]
+        )
+        raw_common_dir = stdout.rstrip("\r\n")
+        if code != 0 or not raw_common_dir:
+            raise ReapError(
+                f"Failed to resolve git common dir for {worktree_path}: {stderr}", code or 1
+            )
+        common_dir = os.path.abspath(os.path.join(str(worktree_path), raw_common_dir))
+        code, stdout, stderr = self.orca_runner(
+            ["git", f"--git-dir={common_dir}", "worktree", "remove", str(worktree_path)]
+        )
+        if code != 0:
+            raise ReapError(f"Failed to remove worktree {worktree_path}: {stderr}", code)
+
+    def _append_reap_record(self, record: ReapRecord) -> None:
+        """Append reap record to the ledger."""
+        if not self.reap_ledger_path:
+            return
+
+        self.reap_ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.reap_ledger_path.open("a", encoding="utf-8") as f:
+            entry = {
+                "event": "reap",
+                "ts": record.timestamp,
+                **record.to_dict(),
+            }
+            f.write(json.dumps(entry, sort_keys=True, separators=(",", ":")))
+            f.write("\n")
+
+    def _run_subprocess(
+        self, command: list[str]
+    ) -> tuple[int, str, str]:
+        """Run a subprocess and return (code, stdout, stderr)."""
+        # Strip inherited git-repository env vars so every git call the reaper
+        # makes (safety checks and removal alike) resolves against the -C
+        # repository it was told to inspect, not whatever repo the caller's
+        # process happens to be sitting in.
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in GIT_REPOSITORY_ENV_VARS
+        }
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            return result.returncode, result.stdout, result.stderr
+        except subprocess.TimeoutExpired:
+            return 1, "", f"Command timed out: {' '.join(command)}"
+        except Exception as e:
+            return 1, "", str(e)

@@ -1,0 +1,11 @@
+{
+  "name": "orchestration-kit",
+  "owner": { "name": "local" },
+  "plugins": [
+    {
+      "name": "orchestration-kit",
+      "source": "./",
+      "description": "Gated worker dispatch, master succession and a review workflow on top of the Orca CLI."
+    }
+  ]
+}

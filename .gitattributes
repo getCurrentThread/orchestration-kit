@@ -1,0 +1,2 @@
+# Store every file exactly as written, so vendor/mogui stays byte-identical to upstream.
+* -text

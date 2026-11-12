@@ -1,0 +1,11 @@
+{
+  "_docs": "Tier policy (v2) read by vendor/mogui/scripts/dispatch-gate and scripts/orchestration.py. A model that is not listed here cannot be dispatched. 'top' is capped at 2 workers per 24 hours; pass --tier-override REASON to exceed it. Model ids must match the ids Claude Code writes to its transcripts.",
+  "version": 2,
+  "runtimes": ["claude", "codex"],
+  "tiers": {
+    "top": ["claude-opus-5-5"],
+    "efficient": ["claude-sonnet-5-5", "claude-haiku-5-5", "gpt-6.1-sol"]
+  },
+  "fanout_caps": { "top": 2 },
+  "window_seconds": 86400
+}
