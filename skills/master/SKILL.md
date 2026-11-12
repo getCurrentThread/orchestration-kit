@@ -27,9 +27,9 @@ python -X utf8 -s -B "${CLAUDE_PLUGIN_ROOT}/scripts/orchestration.py"
 ## Dispatch a worker
 
 1. Write a contract from `contract-template.md` in this skill's folder. The front matter must be exact:
-   `tier`, `runtime` and `repo` are required, and `tier` must be the tier the model has in
+   `tier`, `runtime` and `repo` are required, and `tier` must be the tier the model's family has in
    `config/model-tier-policy.json`. The contract file is also the worker's task spec.
-2. Run `ORCHESTRATION dispatch --contract <file> --agent claude|codex --model <id> --effort <level>`.
+2. Run `ORCHESTRATION dispatch --contract <file> --agent claude|codex --model <family> --effort <level>`.
    Add `--worktree <selector>` only when the worker needs its own workspace.
 3. Read the JSON line it prints:
    - Exit 0, `"stage": "register"`, `"allow": true`: the worker is running and recorded. End your turn;
@@ -46,15 +46,21 @@ the ledger.
 
 ## Models and effort
 
-Always pass both. A model missing from the policy file and effort `max` are refused.
+Always pass `--effort`, and `--model` for a Claude worker. Name the model by its family, as
+`config/model-tier-policy.json` lists it, and never write a version number: at dispatch the wrapper asks
+Claude Code which version the family means now and starts the worker on that. A full model id is only for
+pinning a version on purpose, and it is gated as its family. A model the policy does not cover and effort
+`max` are refused.
 
 | Work | Model | Effort |
 |---|---|---|
-| Search, log summaries, lookups | `claude-haiku-5-5` | `low` |
-| Read-only review, research, planning | `claude-sonnet-5-5` | `medium` |
-| Edits, debugging, commands with side effects | `claude-sonnet-5-5` | `high` |
-| Long autonomous task (about 30 minutes or more) | `claude-sonnet-5-5` | `xhigh` |
-| Re-run of a task whose sonnet/high result fell short | `claude-opus-5-5` | `medium` only |
+| Search, log summaries, lookups | `haiku` | `low` |
+| Read-only review, research, planning | `sonnet` | `medium` |
+| Edits, debugging, commands with side effects | `sonnet` | `high` |
+| Long autonomous task (about 30 minutes or more) | `sonnet` | `xhigh` |
+| Re-run of a task whose sonnet/high result fell short | `opus` | `medium` only |
+
+For `--agent codex`, leave `--model` out: the wrapper passes the model set in `~/.codex/config.toml`.
 
 The top tier is capped at 2 dispatches per 24 hours. `--tier-override "<reason>"` passes one more and
 records the reason in the ledger; use it only when the owner agrees.
@@ -74,7 +80,7 @@ Do this when the owner asks, or once this session's context has been compacted.
 
 1. Fill in `handoff-template.md` and save it as `.orchestration/handoffs/<UTC timestamp>.md`. All eight
    sections are required.
-2. Run `ORCHESTRATION succeed --handoff <file> --model <id> --effort <level> --run <run_id>`.
+2. Run `ORCHESTRATION succeed --handoff <file> --model <family> --effort <level> --run <run_id>`.
    `orca orchestration run-current --json` gives the Run id. This launches the successor in Orca with a
    kickoff prompt.
 3. Tell the owner the successor is up, then stop working. Closing your terminal is the owner's decision.

@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,8 @@ VENDOR = ROOT / "vendor" / "mogui"
 GATE = VENDOR / "scripts" / "dispatch-gate"
 POLICY = ROOT / "config" / "model-tier-policy.json"
 PYTHON = [sys.executable, "-X", "utf8", "-s", "-B"]
+# Answered by the Claude Code CLI from its model picker, without an API turn.
+MODEL_LIST_REQUEST = '{"type":"control_request","request_id":"orchestration-kit","request":{"subtype":"list_models"}}\n'
 HANDOFF_HEADINGS = (
     "Role State",
     "Current Objective",
@@ -68,18 +71,70 @@ def fail(message: str) -> int:
     return 2
 
 
+def tiers() -> dict[str, list[str]]:
+    return json.loads(POLICY.read_text(encoding="utf-8"))["tiers"]
+
+
+def family(model: str) -> str | None:
+    """Return the policy entry a model falls under: one named like it, else one that is a "-"-separated part of it.
+
+    The policy lists families, not versioned ids, so a new version of a model needs no edit anywhere.
+    """
+    name = model.casefold()
+    entries = [entry for models in tiers().values() for entry in models]
+    exact = [entry for entry in entries if entry.casefold() == name]
+    part = [entry for entry in entries if entry.casefold() in name.split("-")]
+    return next(iter(exact + part), None)
+
+
+def codex_model() -> str | None:
+    """Return the model the owner's Codex config selects, so that no Codex model name is kept in this project."""
+    # shortcut: reads the top-level `model` only; follow the active profile once the Codex config uses profiles.
+    try:
+        return tomllib.loads((Path.home() / ".codex" / "config.toml").read_text(encoding="utf-8")).get("model")
+    except (OSError, ValueError):
+        return None
+
+
+def launch_model(agent: str, model: str) -> str:
+    """Return the versioned id Claude Code resolves a family to right now, or the model as typed.
+
+    Orca's built-in catalogue refuses an effort level for some family names (haiku in 1.4.256); a versioned id
+    is outside that catalogue and keeps its effort.
+    """
+    if agent != "claude":
+        return model
+    # shortcut: list_models is the CLI control request Orca's own model discovery sends, and it is not in the
+    # public docs. If it stops answering, the model goes to Orca as typed; move to the Agent SDK's supportedModels() then.
+    command = [
+        os.environ.get("CLAUDE_CLI_COMMAND", "claude"), "-p", "--input-format", "stream-json",
+        "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--settings", '{"disableAllHooks":true}',
+    ]
+    try:
+        listing = run(command, input=MODEL_LIST_REQUEST, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return model
+    for line in listing.splitlines():
+        try:
+            rows = json.loads(line)["response"]["response"]["models"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        for row in rows:
+            if isinstance(row, dict) and str(row.get("value")).casefold() == model.casefold() and row.get("resolvedModel"):
+                return row["resolvedModel"]
+    return model
+
+
 def launch_problem(model: str) -> str | None:
-    """Return why a model may not be launched, or None. Only models listed in the policy are allowed."""
-    tiers = json.loads(POLICY.read_text(encoding="utf-8"))["tiers"]
-    if not any(model.casefold() in map(str.casefold, models) for models in tiers.values()):
+    """Return why a model may not be launched, or None. Only models the policy covers are allowed."""
+    if family(model) is None:
         return f"model {model!r} is not listed in {POLICY}"
     return None
 
 
 def top_tier_problem(model: str, effort: str) -> str | None:
     """Top-tier models are reserved for re-runs at medium effort."""
-    top = json.loads(POLICY.read_text(encoding="utf-8"))["tiers"].get("top", [])
-    if model.casefold() in map(str.casefold, top) and effort != "medium":
+    if family(model) in tiers().get("top", []) and effort != "medium":
         return f"top-tier model {model!r} may only run at effort 'medium'"
     return None
 
@@ -113,13 +168,18 @@ def dispatch(args: argparse.Namespace) -> int:
         # Outside an Orca terminal, worker-start borrows the identity of whichever pane is active:
         # the worker starts in that pane's workspace and reports into that pane's Run.
         return fail("ORCA_TERMINAL_HANDLE is not set; run the master inside an Orca terminal")
-    problem = launch_problem(args.model) or top_tier_problem(args.model, args.effort)
+    # Orca refuses --effort without --model, so a Codex worker needs a model string as well.
+    model = args.model or (codex_model() if args.agent == "codex" else None)
+    if not model:
+        return fail("pass --model; only codex has a default, the model set in ~/.codex/config.toml")
+    problem = launch_problem(model) or top_tier_problem(model, args.effort)
     if problem:
         return fail(problem)
+    entry = family(model)  # what the gate and the ledger see
 
     contract = str(Path(args.contract).resolve())
     check = [
-        "check", "--runtime", args.agent, "--model", args.model, "--tier-policy", str(POLICY),
+        "check", "--runtime", args.agent, "--model", entry, "--tier-policy", str(POLICY),
         "--contract", contract, "--agents", "1", "--completion-channel", "orchestration",
     ]
     if args.tier_override:
@@ -129,10 +189,11 @@ def dispatch(args: argparse.Namespace) -> int:
         print(json.dumps({"stage": "check", **decision}))
         return 2
 
+    model = launch_model(args.agent, model)  # what Orca starts
     started_at = time.time()
     start = run([
         orca(), "orchestration", "worker-start", "--from", handle, "--spec-file", contract,
-        "--agent", args.agent, "--model", args.model, "--effort", args.effort,
+        "--agent", args.agent, "--model", model, "--effort", args.effort,
         "--worktree", args.worktree, "--json", "--full",
     ])
     try:
@@ -153,7 +214,7 @@ def dispatch(args: argparse.Namespace) -> int:
     register = [
         "register", "--job-id", dispatch_id, "--contract-sha", decision["contract_sha"],
         "--runtime", args.agent, "--tier-policy", str(POLICY), "--orchestration-task", task_id,
-        "--declared-model", args.model,
+        "--declared-model", entry,
         "--probe-cmd",
         subprocess.list2cmdline([orca(), "orchestration", "worker-show", "--dispatch", dispatch_id, "--json"]),
     ]
@@ -162,14 +223,15 @@ def dispatch(args: argparse.Namespace) -> int:
         probe = [*PYTHON, str(Path(__file__).resolve()), "probe-model", folder, str(started_at)]
         register += ["--model-probe-cmd", subprocess.list2cmdline(probe)]
     code, registered = gate(*register)
-    print(json.dumps({"stage": "register", "dispatch": dispatch_id, "task": task_id, "run": receipt.get("runId"), **registered}))
+    started = {"stage": "register", "dispatch": dispatch_id, "task": task_id, "run": receipt.get("runId"), "model": model}
+    print(json.dumps({**started, **registered}))
     if code != 0:
         return fail(f"register denied but worker {dispatch_id} is already running; stop it with `orca orchestration worker-stop`")
     return 0
 
 
 def probe_model(args: argparse.Namespace) -> int:
-    """Print the model of the newest Claude Code session started in a folder since a given time."""
+    """Print the model family of the newest Claude Code session started in a folder since a given time."""
     # Claude Code stores a folder's transcripts under its path with every non-alphanumeric character replaced by "-".
     transcripts = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", args.folder)
     deadline = time.monotonic() + 25  # the gate kills this probe after 30 seconds
@@ -190,7 +252,8 @@ def probe_model(args: argparse.Namespace) -> int:
                 if isinstance(candidate, str) and candidate and not candidate.startswith("<"):
                     model = candidate
             if model:
-                print(model)
+                # The transcript holds a versioned id; the gate compares families. An id outside the policy stays as it is.
+                print(family(model) or model)
                 return 0
         time.sleep(1)
     return 1
@@ -213,7 +276,7 @@ def succeed(args: argparse.Namespace) -> int:
         f"described in that skill, and report what you inherited before doing any other work."
     )
     launch = run([
-        orca(), "agent", "launch", "--agent", "claude", "--model", args.model, "--effort", args.effort,
+        orca(), "agent", "launch", "--agent", "claude", "--model", launch_model("claude", args.model), "--effort", args.effort,
         "--prompt", kickoff, "--json",
     ])
     print(launch.stdout or launch.stderr)
@@ -251,21 +314,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    def launch_options(sub: argparse.ArgumentParser) -> None:
-        sub.add_argument("--model", required=True, help="provider model id listed in config/model-tier-policy.json")
+    def launch_options(sub: argparse.ArgumentParser, model_required: bool) -> None:
+        model_help = "a family listed in config/model-tier-policy.json, or a full id of that family to pin a version"
+        sub.add_argument("--model", required=model_required, help=model_help)
         sub.add_argument("--effort", required=True, choices=("low", "medium", "high", "xhigh"))
 
     sub = commands.add_parser("dispatch", help="gate a contract, start one Orca worker, register it")
     sub.add_argument("--contract", required=True, help="contract file; it is also the worker's task spec")
     sub.add_argument("--agent", required=True, choices=("claude", "codex"))
-    launch_options(sub)
+    launch_options(sub, model_required=False)  # codex defaults to the model in its own config
     sub.add_argument("--worktree", default="current", help="Orca worktree selector for the worker (default: current)")
     sub.add_argument("--tier-override", metavar="REASON", help="pass one request over a tier fan-out cap")
     sub.set_defaults(handler=dispatch)
 
     sub = commands.add_parser("succeed", help="launch a successor master from a handoff document")
     sub.add_argument("--handoff", required=True)
-    launch_options(sub)
+    launch_options(sub, model_required=True)
     sub.add_argument("--run", help="Orca Run id the successor should take over")
     sub.set_defaults(handler=succeed)
 

@@ -33,7 +33,7 @@ In a Claude Code session started in an Orca terminal, ask it to act as master; t
 | Piece | Path |
 |---|---|
 | Wrapper (`dispatch`, `succeed`, `inherit`) | `scripts/orchestration.py` |
-| Model tiers and caps | `config/model-tier-policy.json` |
+| Model families, tiers and caps (no versioned ids) | `config/model-tier-policy.json` |
 | Contract and handoff templates | `skills/master/` |
 | Review command, workflow and agents | `commands/`, `review/`, `agents/` |
 | State, per workspace | `.orchestration/` in the workspace root |
