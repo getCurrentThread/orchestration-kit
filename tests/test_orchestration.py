@@ -6,6 +6,7 @@ Run from the repository root: python -X utf8 -s -B -m unittest discover -s tests
 import contextlib
 import io
 import json
+import msvcrt
 import os
 import sys
 import tempfile
@@ -60,7 +61,8 @@ class OrchestrationTest(unittest.TestCase):
 
     def contract(self, tier="efficient", runtime="claude"):
         path = self.work / "contract.md"
-        path.write_text(f"---\ntier: {tier}\nruntime: {runtime}\nrepo: demo\n---\nReply READY.\n", encoding="utf-8")
+        text = f"---\ntier: {tier}\nruntime: {runtime}\nrepo: demo\n---\n\n# Say READY\n\nReply READY.\n"
+        path.write_text(text, encoding="utf-8")
         return str(path)
 
     def cli(self, *arguments):
@@ -98,6 +100,9 @@ class OrchestrationTest(unittest.TestCase):
         starts = self.worker_starts()
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0][starts[0].index("--from") + 1], "term_test")
+        # Without a title Orca names the Task and its Run after the spec's first line, the front matter's "---".
+        self.assertEqual(starts[0][starts[0].index("--task-title") + 1], "Say READY")
+        self.assertIn("watch --run run_test", json.loads(output)["next"])
         rows = self.ledger()
         self.assertEqual([row["decision"] for row in rows], ["ALLOW", "ALLOW"])
         self.assertEqual(rows[1]["job_id"], "ctx_test")
@@ -162,6 +167,65 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("MODEL_TIER_ESCALATION", output)
         self.assertIn("ctx_test", output)
 
+    def watch(self, frames, *options, ends=0):
+        """Run the watch against an Orca that shows one frame per look."""
+        scripted = self.work / "frames.json"
+        scripted.write_text(json.dumps(frames), encoding="utf-8")
+        os.environ["FAKE_ORCA_FRAMES"] = str(scripted)
+        code, output = self.cli("watch", "--run", "run_test", "--poll", "0", *options)
+        self.assertEqual(code, ends, output)
+        # `check` takes the mail, so a watch that ran it would hide the report from the master.
+        self.assertNotIn("check", [call[1] for call in self.orca_calls() if call[0] == "orchestration"])
+        return output
+
+    def test_watch_is_silent_while_orca_delivers_and_ends_once_all_is_settled(self):
+        output = self.watch([
+            {"runtime": "one", "workers": {"ctx_test": "working"}, "unread": 0},
+            {"runtime": "one", "workers": {}, "unread": 1},  # the report arrived and Orca is waking the master
+            {"runtime": "one", "workers": {}, "unread": 0},  # the master read it
+        ])
+        self.assertIn("has settled", output)
+        self.assertNotIn("unread and", output)
+        self.assertEqual(list((self.work / ".orchestration").glob("watch-*")), [])
+
+    def test_watch_wakes_the_master_after_a_restart_that_orca_does_not_wake_it_from(self):
+        output = self.watch([
+            {"runtime": "one", "workers": {"ctx_busy": "working", "ctx_test": "working"}, "unread": 0},
+            {"runtime": None},  # Orca is down
+            # Orca has lost sight of both workers. One is in the middle of a command and one is back at its prompt.
+            {"runtime": "two", "workers": {"ctx_busy": "unknown", "ctx_test": "unknown"}, "printing": ["ctx_busy"], "unread": 1},
+        ], "--grace", "0", "--stalled-after", "0")
+        self.assertIn("1 message(s) for run_test are unread and Orca has not woken you. Orca was restarted", output)
+        self.assertIn("orca orchestration check --run run_test", output)
+        self.assertIn("dispatch ctx_test is open and its worker's screen in term_ctx_test has not changed for 0 s", output)
+        self.assertIn("(activity unknown, liveness unverifiable). Orca was restarted", output)
+        self.assertNotIn("ctx_busy", output)
+        self.assertNotIn("ctx_settled", output)
+
+    def test_watch_names_a_worker_that_stopped_without_settling(self):
+        output = self.watch([{"runtime": "one", "workers": {"ctx_test": "done"}, "unread": 0}], "--stalled-after", "0")
+        self.assertIn("screen in term_ctx_test has not changed for 0 s (activity done, liveness live)", output)
+        self.assertNotIn("restarted", output)
+
+    def test_watch_gives_up_on_what_waiting_cannot_mend(self):
+        output = self.watch([
+            {"runtime": None},  # Orca being down is waited out, however long
+            {"runtime": "one", "slow": True},  # and so is an Orca that is up and gives no answer about the Run
+            {"runtime": "one", "refuses": True, "unread": 0},
+        ], ends=2)
+        self.assertIn('Orca has refused to show run_test 5 times in a row, so nothing watches it. Its answer: {"code": "invalid_argument"}', output)
+        self.assertEqual(sum(call == ["status", "--json"] for call in self.orca_calls()), 7)
+        os.environ["ORCA_CLI_COMMAND"] = str(self.work / "no-such-orca.exe")
+        self.assertIn("cannot be run", self.watch([], ends=2))
+
+    def test_a_second_watch_of_the_same_run_ends_at_once(self):
+        state = self.work / ".orchestration"
+        state.mkdir()
+        with open(state / "watch-term_test-run_test.lock", "a+b") as held:
+            msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
+            self.assertIn("already have a watch", self.watch([]))
+        self.assertEqual(self.orca_calls(), [])
+
     def test_succeed_needs_every_handoff_section_before_launching(self):
         handoff = self.work / "handoff.md"
         handoff.write_text("## Role State\n", encoding="utf-8")
@@ -171,6 +235,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("Observed Baseline", output)
         self.assertEqual(self.orca_calls(), [])
         handoff.write_text("".join(f"## {heading}\n\n" for heading in orchestration.HANDOFF_HEADINGS), encoding="utf-8")
+        del os.environ["ORCA_TERMINAL_HANDLE"]  # a master outside Orca cannot dispatch, and this is its way in
         code, output = self.cli(*launch, "--run", "run_test")
         self.assertEqual(code, 0, output)
         call = self.orca_calls()[0]

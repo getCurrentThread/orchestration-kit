@@ -2,6 +2,7 @@
 
 Run from the workspace root as `python -X utf8 -s -B orchestration.py <command>`:
   dispatch  check a contract with the vendored dispatch gate, start one Orca worker, register it
+  watch     wait for a Run's workers; return when the master must act and Orca has not woken it
   succeed   validate a handoff document and launch a successor master in Orca
   inherit   append the succession to the lineage ledger (run by the successor)
 
@@ -162,6 +163,15 @@ def gate(*arguments: str) -> tuple[int, dict]:
         return result.returncode or 1, unreadable
 
 
+def contract_title(contract: str) -> str:
+    """Return the contract's first heading. Orca names the Task, and a Run it creates for it, after the first
+    line of the spec, which is the front matter's `---` unless a title is passed."""
+    for line in Path(contract).read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return Path(contract).stem
+
+
 def dispatch(args: argparse.Namespace) -> int:
     handle = os.environ.get("ORCA_TERMINAL_HANDLE")
     if not handle:
@@ -193,7 +203,7 @@ def dispatch(args: argparse.Namespace) -> int:
     started_at = time.time()
     start = run([
         orca(), "orchestration", "worker-start", "--from", handle, "--spec-file", contract,
-        "--agent", args.agent, "--model", model, "--effort", args.effort,
+        "--task-title", contract_title(contract), "--agent", args.agent, "--model", model, "--effort", args.effort,
         "--worktree", args.worktree, "--json", "--full",
     ])
     try:
@@ -224,10 +234,137 @@ def dispatch(args: argparse.Namespace) -> int:
         register += ["--model-probe-cmd", subprocess.list2cmdline(probe)]
     code, registered = gate(*register)
     started = {"stage": "register", "dispatch": dispatch_id, "task": task_id, "run": receipt.get("runId"), "model": model}
-    print(json.dumps({**started, **registered}))
     if code != 0:
+        print(json.dumps({**started, **registered}))
         return fail(f"register denied but worker {dispatch_id} is already running; stop it with `orca orchestration worker-stop`")
+    # Orca's guide tells a coordinator to follow a receipt's `next`, so the step that must not be skipped goes there.
+    wait = f"keep one `ORCHESTRATION watch --run {receipt.get('runId')}` running in the background, then end your turn"
+    print(json.dumps({**started, **registered, "next": wait}))
     return 0
+
+
+def orca_answer(*arguments: str) -> dict:
+    """Return Orca's answer to a read-only call, or {} while it gives none: away, starting or too slow."""
+    try:
+        # While the app is down some calls wait for it instead of failing, so every call is bounded.
+        answer = json.loads(run([orca(), *arguments, "--json"], timeout=90).stdout)
+    except OSError as error:
+        # The CLI itself does not start. That is not Orca being away, and waiting does not mend it.
+        raise SystemExit(fail(f"watch: the Orca CLI `{orca()}` cannot be run, so nothing watches the Run: {error}"))
+    except (ValueError, subprocess.TimeoutExpired):
+        return {}
+    return answer if isinstance(answer, dict) else {}
+
+
+def orca_result(*arguments: str) -> dict | None:
+    """Return the result of a read-only Orca call, or None if Orca gave none."""
+    answer = orca_answer(*arguments)
+    return answer.get("result") if answer.get("ok") else None
+
+
+def observe(run_id: str) -> tuple[str, list[dict], int] | str | None:
+    """Return Orca's runtime id, the Run's open workers and the count of its unread mail.
+
+    Return None while Orca gives no answer, and its error as text when it answers that it will not show the Run.
+    Only reads: `check` would take the mail, and then the master would never see it.
+    """
+    runtime = ((orca_result("status") or {}).get("runtime") or {}).get("runtimeId")
+    if not runtime:
+        return None
+    listed = orca_answer("orchestration", "worker-list", "--run", run_id, "--full")
+    # The inbox lists the newest mail first, so unread mail is in its first rows.
+    inbox = orca_answer("orchestration", "inbox", "--terminal", f"run:{run_id}", "--limit", "50", "--full")
+    for answer in (listed, inbox):
+        if not answer.get("ok"):
+            return json.dumps(answer.get("error"))[:300] if answer else None
+    rows = (listed.get("result") or {}).get("workers") or []
+    workers = [{**(row.get("projection") or {}), "terminal": row.get("agentTerminalHandle")} for row in rows]
+    unread = [message for message in (inbox.get("result") or {}).get("messages") or [] if not message.get("read")]
+    return runtime, [worker for worker in workers if worker.get("outcome") == "in_progress"], len(unread)
+
+
+def last_printed(worker: dict) -> float:
+    """Return when a worker's terminal last printed, in epoch seconds, or 0 if it has not since Orca started."""
+    shown = orca_result("terminal", "show", "--terminal", worker["terminal"]) if worker.get("terminal") else None
+    return (((shown or {}).get("terminal") or {}).get("lastOutputAt") or 0) / 1000
+
+
+def watch(args: argparse.Namespace) -> int:
+    """Wait for a Run's workers. Return, which wakes a master that runs this in the background, once the master
+    has to act and Orca has not woken it, or once nothing is left to wait for.
+
+    Orca wakes a master by typing into its terminal. After a restart it types into no terminal that it has not
+    heard from since, so a report that arrives then stays unread behind an idle master.
+    """
+    # One watch per master and Run: a second one would only wake the master twice for the same thing.
+    lock = open(state_dir() / f"watch-{os.environ.get('ORCA_TERMINAL_HANDLE', 'no-terminal')}-{args.run}.lock", "a+b")
+    lock.seek(0)
+    try:
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        print(f"watch: you already have a watch on {args.run}. Nothing to do.")
+        return 0
+    try:
+        first_runtime = unread_since = None
+        quiet_since: dict[str, float] = {}
+        refused = 0
+        while True:
+            seen = observe(args.run)
+            if not isinstance(seen, tuple):
+                # No answer is what this watch waits out: Orca is away, starting or busy. A refusal would never end,
+                # and the master would wait on a watch that sees nothing.
+                refused = refused + 1 if seen else 0
+                if refused >= 5:
+                    return fail(
+                        f"watch: Orca has refused to show {args.run} {refused} times in a row, so nothing watches it. "
+                        f"Its answer: {seen}"
+                    )
+                time.sleep(args.poll)
+                continue
+            refused = 0
+            runtime, workers, unread = seen
+            first_runtime = first_runtime or runtime
+            restarted = " Orca was restarted while you waited." if runtime != first_runtime else ""
+            now = time.time()
+            unread_since = (unread_since or now) if unread else None
+            # After a restart Orca shows no worker as working until it reports, so its word alone would call a busy
+            # worker stopped. The terminal still tells: an agent in a command keeps printing, one at its prompt does not.
+            # shortcut: any output counts, and an idle terminal redraws now and then, which starts its window again.
+            # Compare the screen's text between looks if a stopped worker gets reported late.
+            quiet_since = {
+                worker["dispatchId"]: max(quiet_since.get(worker["dispatchId"], now), last_printed(worker))
+                for worker in workers
+                if (worker.get("stage") or {}).get("activity") != "working"
+            }
+            wake = []
+            if unread and now - unread_since >= args.grace:
+                wake.append(
+                    f"watch: {unread} message(s) for {args.run} are unread and Orca has not woken you.{restarted} "
+                    f"Read them: orca orchestration check --run {args.run}"
+                )
+            for worker in workers:
+                dispatch_id = worker["dispatchId"]
+                if dispatch_id in quiet_since and now - quiet_since[dispatch_id] >= args.stalled_after:
+                    activity = (worker.get("stage") or {}).get("activity")
+                    liveness = (worker.get("liveness") or {}).get("verdict")
+                    wake.append(
+                        f"watch: dispatch {dispatch_id} is open and its worker's screen in {worker['terminal']} has not "
+                        f"changed for {int(now - quiet_since[dispatch_id])} s (activity {activity}, liveness {liveness}).{restarted} "
+                        f"Look at it: orca orchestration worker-read --dispatch {dispatch_id}"
+                    )
+            if not workers and not unread:
+                wake.append(f"watch: every dispatch of {args.run} has settled and its mail is read. Nothing to do.")
+            for line in wake:
+                print(line)
+            if wake:
+                return 0
+            time.sleep(args.poll)
+    finally:
+        lock.close()
+        try:
+            Path(lock.name).unlink()
+        except OSError:  # another watch opened it to find it locked
+            pass
 
 
 def probe_model(args: argparse.Namespace) -> int:
@@ -273,7 +410,8 @@ def succeed(args: argparse.Namespace) -> int:
     kickoff = (
         f"You are the successor master for this workspace. Read the handoff at {handoff} and load the "
         f"orchestration-kit:master skill. {takeover}Then record the succession with the inherit command "
-        f"described in that skill, and report what you inherited before doing any other work."
+        f"described in that skill, and report what you inherited before doing any other work. That report does "
+        f"not end your turn: the skill says when to carry on with the handoff's next step and when to wait."
     )
     launch = run([
         orca(), "agent", "launch", "--agent", "claude", "--model", launch_model("claude", args.model), "--effort", args.effort,
@@ -326,6 +464,17 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument("--worktree", default="current", help="Orca worktree selector for the worker (default: current)")
     sub.add_argument("--tier-override", metavar="REASON", help="pass one request over a tier fan-out cap")
     sub.set_defaults(handler=dispatch)
+
+    sub = commands.add_parser("watch", help="wait for a Run's workers; run it in the background")
+    sub.add_argument("--run", required=True, help="Orca Run id, as the dispatch line gives it")
+    sub.add_argument("--poll", type=float, default=10, help="seconds between looks at Orca (default: 10)")
+    sub.add_argument("--grace", type=float, default=30, help="seconds mail may stay unread before you are woken (default: 30)")
+    sub.add_argument(
+        "--stalled-after", type=float, default=180,
+        help="seconds the screen of an open worker that Orca does not show working may stand still before you are woken "
+        "(default: 180)",
+    )
+    sub.set_defaults(handler=watch)
 
     sub = commands.add_parser("succeed", help="launch a successor master from a handoff document")
     sub.add_argument("--handoff", required=True)
