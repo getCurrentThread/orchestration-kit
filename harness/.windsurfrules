@@ -14,7 +14,7 @@ Automatic memory update: "remember / don't forget / from now on / don't do" trig
 
 ## First-entry autonomous bootstrap
 
-If `.setup-done` is missing, or the project's content files still contain unfilled double-brace template placeholders (for example the Code safety bullets below), setup has not been completed. Run the appropriate flow yourself instead of telling the human to type commands:
+If `.setup-done` is missing, or the project's content files still contain unfilled double-brace template placeholders (for example the Code safety bullets below), setup has not been completed. A linked git worktree is covered by the `.setup-done` of its main checkout, because the git hooks and the wiring that the marker stands for are shared by every checkout: there, the marker in the main checkout counts and setup is never run again. Run the appropriate flow yourself instead of telling the human to type commands:
 
 - Empty/greenfield target: run `bash scripts/setup.sh`, then fill the remaining placeholders by asking the user (see `PROMPTS.md` #1). `setup.sh` writes `.setup-done` when it completes.
 - Existing project target: the installer never overwrites a file. Where the project already had one, the harness's version is beside it as `<name>.starter`. Report every `*.starter` file for the human to adjudicate, merge as they decide, and delete it. Then run `bash scripts/setup.sh` to finalize `.setup-done`. Where the project already runs a husky/lefthook chain, `setup.sh` leaves `core.hooksPath` alone: merge the `.githooks/pre-commit` automation into the existing chain by hand (see `PROMPTS.md` #2).

@@ -121,7 +121,8 @@ done
 if command -v python3 >/dev/null 2>&1; then
   for f in .claude/settings.json .mcp.json .codex/hooks.example.json .cursor/mcp.json; do
     [[ -f "$f" ]] || continue
-    python3 -m json.tool "$f" >/dev/null && ok "$f JSON parse" || fail "$f JSON parse failed"
+    # -I: without it `-m` puts the repository root first on the module path, and a json.py there runs here.
+    python3 -I -m json.tool "$f" >/dev/null && ok "$f JSON parse" || fail "$f JSON parse failed"
   done
 else
   warn "python3 missing; skipped JSON validation"

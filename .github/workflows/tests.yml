@@ -1,0 +1,23 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    # The plugin is Windows-only: the wrapper locks with msvcrt and the fakes are .cmd files.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12" # the oldest version the README names
+      - name: Tools that the tests skip without
+        # A skipped test is green. Found the way the tests find them, so that a runner without one fails here.
+        run: python -X utf8 -s -B -c "import shutil, sys; sys.path.insert(0, 'scripts'); import harness; assert harness.git_bash(), 'no Git Bash'; assert shutil.which('node'), 'no node'"
+      - name: Tests
+        run: python -X utf8 -s -B -m unittest discover -s tests -v

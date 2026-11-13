@@ -52,6 +52,29 @@ COMPLETION_CHANNELS = frozenset({"orchestration", "sentinel-log"})
 _MISSING = object()
 
 
+def ledger_tier_policy_path(path: str | Path) -> str:
+    """Render a tier policy path without exposing the user's home directory."""
+
+    raw_path = os.fspath(path)
+    if raw_path == "~" or raw_path.startswith(f"~{os.sep}"):
+        return raw_path
+
+    path_value = Path(raw_path)
+    try:
+        relative_path = path_value.relative_to(Path.home())
+    except ValueError:
+        return raw_path
+    if not relative_path.parts:
+        return "~"
+    return str(Path("~") / relative_path)
+
+
+def normalize_tier_policy_path(path: str) -> str:
+    """Use one comparison key for absolute and home-relative policy paths."""
+
+    return ledger_tier_policy_path(Path(os.path.expanduser(path)))
+
+
 def _default_ledger_path() -> Path:
     value = os.environ.get("DISPATCH_GATE_LEDGER")
     if value:
@@ -548,6 +571,8 @@ class DispatchGate:
         expected_completion_channel: str | None = None,
         worker_pid: str | None = None,
         pane: str | None = None,
+        card: str | None = None,
+        card_reason: str | None = None,
     ) -> GateDecision:
         """Register a job only after independent probe verification succeeds."""
 
@@ -653,6 +678,12 @@ class DispatchGate:
                 entry["worker_pid"] = worker_pid.strip()
             if pane and pane.strip():
                 entry["pane"] = pane.strip()
+            # The card fields are optional for the Python API so older callers
+            # and ledgers remain readable. The supervised wrapper supplies one
+            # of them for every new dispatch registration.
+            if card is not None or card_reason is not None:
+                entry["card"] = card.strip() if card is not None else ""
+                entry["card_reason"] = card_reason.strip() if card_reason is not None else ""
             # Say what was verified and how, so a later reader can tell an
             # unverified registration from a verified one instead of assuming.
             entry["model_declared"] = declared_model
@@ -929,7 +960,9 @@ class DispatchGate:
         # cannot be told apart from one a substituted policy allowed.
         if getattr(self, "_tier", ""):
             entry["tier"] = self._tier
-        entry["tier_policy_path"] = str(self.config.tier_policy_path)
+        entry["tier_policy_path"] = ledger_tier_policy_path(
+            self.config.tier_policy_path
+        )
         if getattr(self, "_tier_policy_digest", ""):
             entry["tier_policy_sha256"] = self._tier_policy_digest
         if decision.allow and decision.contract_sha is not None:

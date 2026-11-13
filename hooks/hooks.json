@@ -1,0 +1,17 @@
+{
+  "description": "After a compaction, remind the orchestration master of a workspace, and no other session, that a handoff is due",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -X utf8 -s -B \"${CLAUDE_PLUGIN_ROOT}/scripts/orchestration.py\" compacted",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

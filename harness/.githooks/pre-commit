@@ -12,7 +12,10 @@ set -e
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TODAY=$(date +%Y-%m-%d)
-AUTHOR=$(git config user.name)
+# `git config` fails where the identity comes from the environment, and `set -e` would end the hook there
+# without a word, which git reports as a refused commit.
+AUTHOR="$(git config user.name || true)"
+AUTHOR="${AUTHOR:-${GIT_AUTHOR_NAME:-}}"
 BUMPED=()
 SUBSTITUTED=()
 WARNINGS=()
@@ -30,7 +33,9 @@ else
 fi
 
 # Staged .md in docs/ (added or modified)
-STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^docs/.*\.md$' || true)
+# core.quotePath=false: git otherwise prints a name that is not ASCII quoted and escaped, which matches no
+# pattern and names no file, so such a page was skipped without a word.
+STAGED=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACM | grep -E '^docs/.*\.md$' || true)
 
 # No exit when nothing in docs/ is staged: the secret scan below covers every commit.
 # The loop then reads one empty line and skips it.
@@ -57,14 +62,21 @@ while IFS= read -r file; do
   # Handle both tasks in one pass:
   #   (a) bump updated_at: to today's date (noop if already today)
   #   (b) substitute the @git_author placeholder -> git user.name (frontmatter only)
-  # exit code: 0=noop, 1=bumped, 2=substituted, 3=both
+  # exit code: 0=noop, 11=bumped, 12=substituted, 13=both. Any other code is the updater itself failing (no
+  # python, a page that is not UTF-8), which exits 1 and used to be read as "bumped".
+  if [[ -z "$AUTHOR" ]] && grep -q '@git_author' "$full"; then
+    WARNINGS+=("$file (\`@git_author\` left as it is: git has no user.name)")
+  fi
   py_code=0
   "$PYTHON3" - "$full" "$TODAY" "$AUTHOR" "$has_updated_at" <<'PY' || py_code=$?
 import sys, re
 path, today, author, has_ua = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
-with open(path, 'r', encoding='utf-8') as f:
+# Read and write without newline translation: on Windows a text-mode write turns every LF of the page into
+# CRLF, and the commit then carries the whole page as changed. Every line keeps the ending it has, and nothing
+# below the front matter is touched.
+with open(path, 'r', encoding='utf-8', newline='') as f:
     content = f.read()
-m = re.match(r'^(---\n.*?\n---\n)', content, re.DOTALL)
+m = re.match(r'^(---\r?\n.*?\r?\n---\r?\n)', content, re.DOTALL)
 if not m:
     sys.exit(0)
 fm = m.group(1)
@@ -73,7 +85,7 @@ new_fm = fm
 # (a) updated_at bump: only when has_updated_at
 bumped = False
 if has_ua:
-    after = re.sub(r'(?m)^updated_at: .*$', f'updated_at: {today}', new_fm, count=1)
+    after = re.sub(r'(?m)^updated_at: [^\r\n]*', f'updated_at: {today}', new_fm, count=1)
     if after != new_fm:
         new_fm = after
         bumped = True
@@ -82,7 +94,7 @@ if has_ua:
 # (note is free text, so @git_author may not be intended as a placeholder there.
 #  Example: a commit subject that itself contains the word @git_author and is preserved in note.)
 subbed = False
-if '@git_author' in new_fm:
+if author and '@git_author' in new_fm:
     lines = new_fm.split('\n')
     in_audit_log = False
     out_lines = []
@@ -103,20 +115,21 @@ if '@git_author' in new_fm:
         new_fm = after
         subbed = True
 
-if new_fm != fm:
-    open(path, 'w', encoding='utf-8').write(new_fm + content[len(fm):])
-
-code = (1 if bumped else 0) | (2 if subbed else 0)
-sys.exit(code)
+if new_fm == fm:
+    sys.exit(0)
+with open(path, 'w', encoding='utf-8', newline='') as f:
+    f.write(new_fm + content[len(fm):])
+sys.exit(10 + (1 if bumped else 0) + (2 if subbed else 0))
 PY
   # py_code is captured from the `|| py_code=$?` on the heredoc above.
-  if (( py_code & 1 )); then
-    BUMPED+=("$file")
-  fi
-  if (( py_code & 2 )); then
-    SUBSTITUTED+=("$file")
-  fi
-  if (( py_code != 0 )); then
+  case "$py_code" in
+    0) ;;
+    11) BUMPED+=("$file") ;;
+    12) SUBSTITUTED+=("$file") ;;
+    13) BUMPED+=("$file"); SUBSTITUTED+=("$file") ;;
+    *) WARNINGS+=("$file (front matter left as it is: its updater ended with exit $py_code)") ;;
+  esac
+  if (( py_code >= 11 && py_code <= 13 )); then
     git add "$full"
   fi
 done <<<"$STAGED"

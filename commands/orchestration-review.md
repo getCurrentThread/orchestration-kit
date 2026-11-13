@@ -1,6 +1,6 @@
 ---
 description: Run the orchestration-review Workflow over a diff (uncommitted changes, a branch against its base, or a GitHub PR) and report blocking vs advisory findings.
-argument-hint: "[base-ref [path...] | pr-number | pr-url | blank for uncommitted changes]"
+argument-hint: "[--in <directory>] [--contract <file>] [base-ref [path...] | pr-number | pr-url | blank for uncommitted changes]"
 ---
 
 # /orchestration-kit:orchestration-review
@@ -23,6 +23,21 @@ output.
 | A branch, tag or commit (e.g. `master`), optionally followed by paths | **Branch Mode** — review what the current branch adds to that base |
 | Number (e.g. `42`) or PR URL | **PR Mode** — review a GitHub PR |
 
+A leading `--in <directory>` names the checkout to review when it is not the
+current folder: a worker's own worktree, or a project a master was given a task
+for. Accept it only if it is an existing directory and
+`git -C "<DIR>" rev-parse --show-toplevel` succeeds; stop with an error
+otherwise. With it, every `git` command below runs as `git -C "<DIR>" ...`, "the
+current branch" is the one checked out there, and paths are relative to that
+checkout. The mode is chosen from what follows it. The diff file is written
+where it always is.
+
+A leading `--contract <file>` names the task contract the change was made for,
+before or after `--in`. Accept it only if it is an existing file; stop with an
+error otherwise. With it, one more reviewer reads the contract beside the diff
+and says of every requirement whether the change meets it. Without it, nobody
+checks the change against what was asked: use it for every worker's result.
+
 Never pass the raw argument to the shell. Derive the values named below from it
 and use only those.
 
@@ -31,7 +46,8 @@ and use only those.
 ## Phase 1 — GATHER
 
 Write the unified diff to a new file, `.orchestration/review-<UTC timestamp>.diff`
-in the workspace root (`<DIFF>` below). Create the folder if it is missing; it is
+in your own workspace root (`<DIFF>` below; an absolute path, also with `--in`).
+Create the folder if it is missing; it is
 state and is never committed. Do not print the diff into the conversation and do
 not paste it anywhere: the reviewers read the file. Run these commands in Bash,
 because PowerShell re-encodes redirected output.
@@ -102,15 +118,17 @@ Workflow({
   args: {
     diffFile: "<absolute path of <DIFF>>",   // required
     diffLines: <LINES>,                      // required, from `wc -l`
-    language: "typescript"                   // optional
+    language: "typescript",                  // optional
+    contractFile: "<absolute path of the contract>"   // only with --contract
   }
 })
 ```
 
-The workflow fans out reviewers in parallel (quality, silent failures, and the
-language's reviewer when `language` is set), dedups findings on the normalized
-evidence snippet, and runs an adversarial verifier on every unique CRITICAL/HIGH
-finding. It returns:
+The workflow fans out reviewers in parallel (quality, silent failures, the
+language's reviewer when `language` is set, and the contract reviewer when
+`contractFile` is set), dedups findings on the normalized evidence snippet, and
+runs an adversarial verifier on every unique CRITICAL/HIGH finding. A
+requirement the contract reviewer finds unmet is a HIGH finding. It returns:
 
 ```jsonc
 {
@@ -119,6 +137,8 @@ finding. It returns:
   "failedDimensions": [ /* { dimension, error } */ ],
   "blocking": [ /* confirmed CRITICAL/HIGH + unverifiable findings */ ],
   "advisory": [ /* MEDIUM/LOW + adversarially-refuted findings */ ],
+  "read": { "diffLines": 244, "quality": 245, "silent-failures": 245 },  // how far each reviewer said it read
+  "contract": [ /* { requirement, status: "met" | "unmet" | "unjudged", evidence } */ ],  // null without contractFile
   "stats": { "dimensions": 3, "failed": 0, "raw": 11, "unique": 4, "confirmed": 3, "unverified": 0, "uncertain": 0, "refuted": 1 }
 }
 ```
@@ -126,9 +146,21 @@ finding. It returns:
 ## Phase 3 — REPORT
 
 Present the result to the user (this is the human review gate; the workflow does
-not commit anything):
+not commit anything). A long result can arrive cut off in the notification that
+the workflow has finished: the task's output file, which that notification
+names, holds it whole under `result`. Read the `contract` rows from there.
 
 - Lead with `verdict` and the `stats` line (dimensions, raw to unique collapse).
+  `stats.failed` of 0 means that every reviewer said it read the diff to its last
+  line: one that read less is counted as failed. `read` shows each reviewer's
+  count beside the diff's length, so a review with no findings needs no look at
+  the workflow's journal.
+- With `--contract`, give the count of `contract` rows per status and list
+  every row that is `unmet` or `unjudged` with its `evidence`. An `unjudged`
+  requirement is one a diff cannot show, such as the output of a command: it is
+  yours to check by running what the contract names, and the review has not
+  cleared it. Without `--contract`, say that the change was not checked against
+  any contract: the reviewers then see the diff only.
 - List every `blocking` finding with file, severity, and evidence — these must
   clear before a commit. Findings tagged "could not be verified" stay in
   `blocking` by design; call them out as needing manual confirmation.

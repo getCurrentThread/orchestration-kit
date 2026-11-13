@@ -4,10 +4,12 @@ Run from the repository root: python -X utf8 -s -B -m unittest discover -s tests
 """
 
 import contextlib
+import fnmatch
 import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -62,6 +64,12 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(sorted(settings["enabledMcpjsonServers"]), sorted(servers))
         # These would land at the root of someone else's project.
         self.assertFalse({"LICENSE", "README.md"} & set(FILES))
+        # The command that stages the executable bit names every script and hook, and nothing that is not there:
+        # git refuses a pattern that matches no file.
+        patterns = harness.STAGE_EXECUTABLE.split()[3:]
+        code = [name for name in FILES if name.endswith(".sh") or name.startswith(".githooks/")]
+        self.assertEqual([name for name in code if not any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns)], [])
+        self.assertEqual([pattern for pattern in patterns if not fnmatch.filter(code, pattern)], [])
 
     @unittest.skipUnless(harness.git_bash(), "needs the bash of Git for Windows")
     def test_emoji_guard_decides_without_jq(self):
@@ -123,6 +131,57 @@ class HarnessTest(unittest.TestCase):
         self.assertIn("Staged as *.starter, merge by hand (2 file(s))", output)
         self.assertIn("! .gitignore.starter", output)
 
+    def test_a_gitignore_of_the_projects_own_gets_the_lines_it_lacks(self):
+        self.target.mkdir()
+        mine = b"dist\n/build/\n.env\n"
+        (self.target / ".gitignore").write_bytes(mine)
+        _, planned = self.run_harness("--dry-run")
+        self.assertEqual((self.target / ".gitignore").read_bytes(), mine)
+        code, done = self.run_harness()
+        self.assertEqual(code, 0, done)
+        merged = (self.target / ".gitignore").read_bytes()
+        self.assertTrue(merged.startswith(mine + b"# Repository harness\nnode_modules/\n"), merged)
+        added = merged[len(mine):].splitlines()
+        self.assertNotIn(b"dist/", added)  # `dist` covers it
+        self.assertNotIn(b".env", added)
+        self.assertIn(b"!.env.example", added)
+        self.assertFalse((self.target / ".gitignore.starter").exists())
+        report = [line for line in done.splitlines() if line.startswith("  > .gitignore (node_modules/, ")]
+        self.assertEqual(len(report), 1, done)
+        self.assertIn(report[0], planned)  # a dry run names the same lines
+        code, again = self.run_harness()
+        self.assertEqual((code, (self.target / ".gitignore").read_bytes()), (0, merged))  # nothing is appended twice
+        self.assertNotIn("  > ", again)
+
+    def test_every_placeholder_gets_a_value_and_nothing_else_is_changed(self):
+        # A placeholder without a value stops every worker: its router tells it to ask. PROMPTS.md describes them.
+        left = {name for path in (FILES[name] for name in FILES if name != "PROMPTS.md") for name in harness.PLACEHOLDER.findall(path.read_bytes())}
+        known = {name.encode("utf-8") for name in (*harness.NEUTRAL, "product-name", "repo", harness.INTEGRATION_BRANCH)}
+        self.assertEqual(left - known, set())
+        self.assertEqual(known - left, set())  # and no value outlives its placeholder
+        self.run_harness()
+        (self.target / "CLAUDE.md.starter").write_bytes(FILES["CLAUDE.md"].read_bytes())  # as beside a router of the project's own
+        mine = b"a page of the project's own: {{product-name}} {{mustache}}\r\n"
+        (self.target / "README.md").write_bytes(mine)
+        (self.target / ".agent/Memory.md").write_bytes(mine)  # at a path of the harness that has no placeholder
+        with open(self.target / ".agent/Context.md", "ab") as page:
+            page.write(b"ours: {{mustache}}\r\n")
+        for command in (["init", "-q", "-b", "trunk"], ["remote", "add", "origin", "https://someone:a-token@example.invalid/team/product.git"]):
+            self.git(*command)
+        before = tree(self.target)
+        changed = harness.fill(self.target)
+        self.assertEqual(changed, [".agent/Context.md", ".agent/Instructions.md", ".cursorrules", ".windsurfrules", "AGENTS.md", "CLAUDE.md", "CLAUDE.md.starter"])
+        after = tree(self.target)
+        self.assertEqual({name for name in after if after[name] != before[name]}, set(changed))
+        self.assertEqual([name for name in changed if b"{{" in after[name]], [".agent/Context.md"])
+        self.assertTrue(after[".agent/Context.md"].endswith(b"ours: {{mustache}}\r\n"))  # double braces of the project's own
+        self.assertEqual(len({after[name] for name in (*ROUTERS, "CLAUDE.md.starter")}), 1)
+        self.assertIn(b"# Project Instructions: repo\n", after["CLAUDE.md"])
+        self.assertIn(b"open a PR into `trunk`.", after["CLAUDE.md"])
+        self.assertIn(b"| **Repo** | https://example.invalid/team/product.git |", after[".agent/Context.md"])
+        self.assertNotIn(b"a-token", b"".join(after[name] for name in changed))  # these pages are committed
+        self.assertEqual(harness.fill(self.target), [])  # a second run finds nothing to fill
+
     def test_dry_run_writes_nothing_and_reports_what_a_run_does(self):
         code, output = self.run_harness("--dry-run")
         self.assertEqual(code, 0, output)
@@ -147,6 +206,27 @@ class HarnessTest(unittest.TestCase):
             self.assertIn("docs", output)
             self.assertEqual(tree(self.target), {"docs": b"a file, not a folder\n"})
 
+    def test_an_install_that_fails_half_way_takes_its_files_back(self):
+        # Half a harness would pass for a whole one, and nothing would ever complete it.
+        self.target.mkdir()
+        (self.target / "CLAUDE.md").write_bytes(b"ours\n")
+        copy, copied = shutil.copyfile, []
+
+        def disk_fills_up(source, destination):
+            copied.append(destination)
+            if len(copied) == 5:
+                Path(destination).write_bytes(b"cut short")
+                raise OSError("no space left on device")
+            return copy(source, destination)
+
+        with mock.patch.object(harness.shutil, "copyfile", disk_fills_up):
+            code, output = self.run_harness()
+        self.assertEqual(code, 2, output)
+        self.assertIn("no space left on device", output)
+        self.assertEqual(tree(self.target), {"CLAUDE.md": b"ours\n"})
+        self.assertEqual(self.run_harness()[0], 0)  # and the next run installs all of it
+        self.assertEqual(len(tree(self.target)), len(FILES) + 1)  # every path, and the harness's router beside the project's
+
     def test_the_harness_source_is_refused_as_a_target(self):
         before = tree(harness.SOURCE)
         for self.target in (harness.SOURCE, harness.SOURCE / "docs"):
@@ -168,8 +248,11 @@ class HarnessTest(unittest.TestCase):
             return hooks_path, done.stdout
 
         self.run_harness()
+        # `python -m` looks in the repository's root first. The setup runs the harness's own code and no one else's.
+        (self.target / "json.py").write_text("open('ran-by-setup', 'w')\n", encoding="utf-8")
         (self.target / "lefthook.yml").write_text("pre-commit: {}\n", encoding="utf-8")
         self.assertEqual(setup()[0], "")
+        self.assertFalse((self.target / "ran-by-setup").exists())
         (self.target / "lefthook.yml").unlink()
         # Git stops running a hook in .git/hooks once the path moves, so setup has to name it.
         (self.target / ".git/hooks/pre-push").write_bytes(b"#!/bin/sh\n")
@@ -190,6 +273,72 @@ class HarnessTest(unittest.TestCase):
             self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         status = subprocess.run(["git", "status", "--porcelain"], cwd=self.target, capture_output=True, text=True)
         self.assertEqual(status.stdout, "")
+
+    def git(self, *command, **environment):
+        done = subprocess.run(
+            ["git", *command], cwd=self.target, capture_output=True, env={**os.environ, "SKIP_GITLEAKS": "1", **environment}
+        )
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        return done.stdout + done.stderr  # git passes on what a hook prints through either
+
+    @unittest.skipUnless(harness.git_bash(), "needs the bash of Git for Windows")
+    def test_the_commit_hook_keeps_line_endings_and_reads_every_file_name(self):
+        self.run_harness()
+        for command in (
+            ["init", "-q"], ["config", "commit.gpgsign", "false"], ["config", "core.autocrlf", "false"],
+            ["config", "core.hooksPath", ".githooks"],
+        ):
+            self.git(*command)
+        page = b"---\ntitle: page\nupdated_at: 2020-01-01\n---\n\nbody\n"
+        pages = {
+            "docs/plain.md": page, "docs/한글.md": page, "docs/crlf.md": page.replace(b"\n", b"\r\n"),
+            "docs/mixed.md": page + b"a pasted line\r\nand one more\n",  # each line keeps its own ending
+        }
+        for name, content in pages.items():
+            (self.target / name).write_bytes(content)
+        unreadable = page + b"caf\xe9\n"  # not UTF-8, so the updater fails on it
+        (self.target / "docs/latin1.md").write_bytes(unreadable)
+        self.git("add", *pages, "docs/latin1.md")
+        # The identity comes from the environment alone, as on a build server: `git config user.name` fails there.
+        empty = self.target.parent / "empty.gitconfig"
+        empty.write_bytes(b"")
+        identity = {
+            "GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "tester",
+            "GIT_AUTHOR_EMAIL": "tester@example.invalid", "GIT_COMMITTER_NAME": "tester", "GIT_COMMITTER_EMAIL": "tester@example.invalid",
+        }
+        said = self.git("commit", "-q", "-m", "Add pages", **identity)
+        # A failed updater exits 1, which used to be read as "bumped": the page is named as left alone instead.
+        self.assertIn(b"docs/latin1.md (front matter left as it is", said)
+        self.assertNotIn(b"  - docs/latin1.md\n", said)
+        self.assertEqual(self.git("show", "HEAD:docs/latin1.md"), unreadable)
+        for name, content in pages.items():
+            committed = self.git("show", f"HEAD:{name}")
+            self.assertRegex(committed, rb"updated_at: 20\d\d-\d\d-\d\d\r?\n", name)
+            self.assertNotIn(b"2020-01-01", committed, name)  # a name that is not ASCII used to be skipped
+            # The page keeps the line endings it had: a text-mode write on Windows turned LF into CRLF.
+            self.assertEqual(re.sub(rb"updated_at: [0-9-]+", b"updated_at: 2020-01-01", committed), content, name)
+
+    @unittest.skipUnless(harness.git_bash(), "needs the bash of Git for Windows")
+    def test_a_linked_worktree_is_covered_by_the_setup_of_its_main_checkout(self):
+        def notice(folder):
+            done = subprocess.run([str(harness.git_bash()), ".claude/hooks/setup-check.sh"], cwd=folder, capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            return done.stdout
+
+        self.run_harness()
+        for command in (
+            ["init", "-q"], ["config", "user.name", "tester"], ["config", "user.email", "tester@example.invalid"],
+            ["config", "commit.gpgsign", "false"], ["add", "-A"], ["commit", "-q", "-m", "Install the harness"],
+            ["worktree", "add", "-q", "../linked"],
+        ):
+            self.git(*command)
+        linked = self.target.parent / "linked"
+        self.assertIn("[AGENT-BOOTSTRAP]", notice(self.target))
+        self.assertIn("[AGENT-BOOTSTRAP]", notice(linked))
+        # The marker is not tracked, so a worker's new worktree never has one of its own.
+        (self.target / ".setup-done").touch()
+        self.assertEqual(notice(self.target), "")
+        self.assertEqual(notice(linked), "")
 
     @unittest.skipUnless(harness.git_bash(), "needs the bash of Git for Windows")
     def test_a_commit_without_docs_still_reaches_the_secret_scan(self):
