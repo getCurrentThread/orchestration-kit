@@ -1,6 +1,6 @@
 ---
 description: Run the orchestration-review Workflow over a diff (uncommitted changes, a branch against its base, or a GitHub PR) and report blocking vs advisory findings.
-argument-hint: [base-ref [path...] | pr-number | pr-url | blank for uncommitted changes]
+argument-hint: "[base-ref [path...] | pr-number | pr-url | blank for uncommitted changes]"
 ---
 
 # /orchestration-kit:orchestration-review
