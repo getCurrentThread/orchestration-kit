@@ -1,6 +1,7 @@
 {
   "name": "orchestration-kit",
-  "owner": { "name": "local" },
+  "description": "The orchestration-kit plugin: an orchestration layer for Claude Code on Windows over the Orca CLI.",
+  "owner": { "name": "getCurrentThread" },
   "plugins": [
     {
       "name": "orchestration-kit",

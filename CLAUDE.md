@@ -10,3 +10,5 @@ A Claude Code plugin for Windows. `README.md` describes it.
 - `vendor/mogui/` is byte-identical to its upstream: do not edit it. `harness/` is derived from its upstream
   and is edited here; record what differs in `vendor/mogui-agent-harness/UPSTREAM.md`.
 - Every file is stored as written (`.gitattributes`: `* -text`). Keep LF line endings.
+- An install from GitHub gets a new copy only when `version` in `.claude-plugin/plugin.json` changes. Raise
+  it with every change to `master` that those installs should receive.

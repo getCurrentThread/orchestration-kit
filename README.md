@@ -29,18 +29,36 @@ master hands a worker a contract, and the repository the worker starts in suppli
 Windows, Python 3.12 or later on `PATH` as `python`, Claude Code, and the Orca desktop app with its `orca`
 CLI. The master session must run inside an Orca terminal.
 
-The repository harness is bash: its hooks and scripts need Git for Windows. Installing it does not. Its
-code graph is optional and needs [code-review-graph](https://github.com/tirth8205/code-review-graph) on
-`PATH`: `uv tool install code-review-graph`, or `pip install code-review-graph`.
+The repository harness is bash: its hooks and scripts need Git for Windows. Installing it does not. Two of
+its parts are optional and do nothing until their tool is on `PATH`: the code graph needs
+[code-review-graph](https://github.com/tirth8205/code-review-graph) (`uv tool install code-review-graph`, or
+`pip install code-review-graph`), and the secret scan of every commit needs
+[gitleaks](https://github.com/gitleaks/gitleaks).
 
 ## Install
 
+From GitHub, in a shell:
+
 ```text
-claude plugin marketplace add <path to this folder>
+claude plugin marketplace add getCurrentThread/orchestration-kit
 claude plugin install orchestration-kit@orchestration-kit
 ```
 
-To try it in one session without installing: `claude --plugin-dir <path to this folder>`.
+Claude Code clones the repository with `git` and keeps its own copy of the plugin. To move to a later
+release, run `claude plugin update orchestration-kit@orchestration-kit` and start a new session. A new copy
+arrives only when `version` in `.claude-plugin/plugin.json` has changed.
+
+From a clone, to work on the plugin itself:
+
+```text
+git clone https://github.com/getCurrentThread/orchestration-kit.git
+claude plugin marketplace add ./orchestration-kit
+claude plugin install orchestration-kit@orchestration-kit
+```
+
+A marketplace added from a folder is read in place: an edit in the clone takes effect at the next session
+start or `/reload-plugins`, whatever the version says. To try the plugin in one session without installing:
+`claude --plugin-dir <path to the clone>`.
 
 ## Use
 
@@ -59,9 +77,12 @@ In a Claude Code session started in an Orca terminal, ask it to act as master; t
 
 ### Install the repository harness
 
+Ask the master to install it: its skill carries the command with the plugin's own path. By hand, from a
+clone:
+
 ```text
-python -X utf8 -s -B <path to this folder>/scripts/harness.py <repository root> --dry-run
-python -X utf8 -s -B <path to this folder>/scripts/harness.py <repository root>
+python -X utf8 -s -B <path to the clone>/scripts/harness.py <repository root> --dry-run
+python -X utf8 -s -B <path to the clone>/scripts/harness.py <repository root>
 ```
 
 A file the repository does not have is added. A file it has is never touched: when it differs from the
@@ -71,8 +92,11 @@ prints what it did and the steps that remain, and names what the machine lacks (
 
 `harness/` holds exactly the files that are installed. The first session in the repository finishes the
 job: its router tells the agent to report the `*.starter` files, fill the `{{...}}` placeholders and run
-`bash scripts/setup.sh`. That script is the only thing that sets `core.hooksPath`, and it leaves a
-repository's husky or lefthook chain as it is.
+`bash scripts/setup.sh`. The installer never sets `core.hooksPath`; that script does, and it leaves a
+repository's husky or lefthook chain as it is. The setting is shared by every checkout of the repository,
+linked worktrees included, and git stops running the hooks in `.git/hooks` once it is set: the script names
+those hooks so that they can be merged into `.githooks/` by hand. The pre-commit hook keeps `updated_at`
+current in the pages under `docs/` and scans every commit for secrets where `gitleaks` is installed.
 
 The harness gives every session in the repository a map of the code through `code-review-graph`:
 
@@ -89,14 +113,23 @@ None of this does anything until the tool is installed.
 python -X utf8 -s -B -m unittest discover -s tests -v
 ```
 
-The tests run the real vendored gate against a fake Orca CLI (`tests/fake-orca.cmd`), the installer
-against the real harness tree, the harness's write guard through Git Bash, and the review workflow's script
-under Node with scripted agents (skipped where `node` is not on `PATH`).
+The tests run the real vendored gate against a fake Orca CLI and a fake Claude CLI (`tests/fake-orca.cmd`,
+`tests/fake-claude.cmd`), the installer against the real harness tree, the harness's write guard, hook setup
+and pre-commit hook through Git Bash, and the review workflow's script under Node with scripted agents
+(skipped where `node` is not on `PATH`).
 
 ## Provenance
 
 `vendor/mogui/UPSTREAM.md` and `vendor/mogui-agent-harness/UPSTREAM.md` list the upstream commit, what
 was copied, what was changed, what was left out, and what was measured on Windows. `vendor/mogui/` is
-byte-identical to its upstream; `harness/` is derived from its upstream and maintained here. Both
-upstreams are MIT licensed; their license texts are in `vendor/mogui/` and
-`harness/.agent/LICENSE-mogui-agent-harness`.
+byte-identical to its upstream; `harness/` is derived from its upstream and maintained here.
+
+## License
+
+MIT: see `LICENSE`. What was taken from other projects keeps its own MIT notice:
+
+| Notice | Covers |
+|---|---|
+| `vendor/mogui/LICENSE` | mogui-ADE-orchestrator: every file `vendor/mogui/UPSTREAM.md` lists as copied or modified |
+| `vendor/mogui/LICENSE-ECC` | [ECC](https://github.com/affaan-m/ECC), from which the review agents and workflow derive |
+| `harness/.agent/LICENSE-mogui-agent-harness` | mogui-agent-harness: `harness/`. It travels with every install of the harness |
