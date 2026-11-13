@@ -140,7 +140,6 @@ paths = [
   '''scripts/redaction-scan\.sh''',
   '''scripts/redaction-allowlist\.txt''',
   '''config/gitleaks\.toml''',
-  '''tests/redaction-gate/''',
   # Build products and local worktree tooling.
   '''__pycache__/''',
   '''\.pyc$''',

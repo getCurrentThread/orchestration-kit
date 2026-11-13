@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "harness"
 # Windows records no executable bit, and without it another system skips the git hook and cannot run the scripts.
-STAGE_EXECUTABLE = "git add --chmod=+x .claude/hooks/*.sh .codex/hooks/*.sh .githooks/* scripts/*.sh tests/redaction-gate/run.sh"
+STAGE_EXECUTABLE = "git add --chmod=+x .claude/hooks/*.sh .codex/hooks/*.sh .githooks/* scripts/*.sh"
 PLACEHOLDER = re.compile(rb"\{\{([^{}\n]+)\}\}")  # what the harness leaves for a project to fill in
 INTEGRATION_BRANCH = "integration branch: `dev`, or the default branch"
 NOT_RECORDED = "not recorded yet"

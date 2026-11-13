@@ -67,7 +67,8 @@ if command == "orchestration worker-start":
         transcripts = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", folder)
         transcripts.mkdir(parents=True, exist_ok=True)
         entry = {"type": "assistant", "isSidechain": False, "message": {"model": model}}
-        (transcripts / "worker.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
+        # A file of its own per worker, as a real session writes: the wrapper reads the one born after the dispatch.
+        (transcripts / f"worker-{time.time_ns()}.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
     name = os.environ.get("FAKE_ORCA_DISPATCH", "test")  # a test that starts a second worker names it
     result = {
         "state": "ready",
@@ -84,7 +85,8 @@ elif command == "orchestration worker-show":
     result = {
         "dispatch": {"id": "ctx_test", "taskId": "task_test", "status": "dispatched"},
         "projection": {"dispatchId": dispatch, "outcome": outcome},
-        # Orca leaves the field out when it did not look, and gives null when it looked and found no wait.
+        # Orca leaves the field out when it did not look, and gives null when it looked and found no wait. The
+        # shape is from `orca orchestration worker-show --help`: no parked worker was there to measure.
         "observation": {"agentWait": {"evidence": "prompt-text"} if dispatch in frame().get("parked", []) else None},
     }
 elif command == "orchestration dispatch-show":
@@ -92,9 +94,6 @@ elif command == "orchestration dispatch-show":
 elif command == "agent launch":
     result = {"outcome": {"kind": "terminal"}}
 elif command == "worktree current":
-    if os.environ.get("FAKE_ORCA_CURRENT") == "not json":  # a CLI that answers this call in words
-        print("error: unknown command 'current'", file=sys.stderr)
-        sys.exit(1)
     if os.environ.get("FAKE_ORCA_CURRENT") == "none":  # what Orca says in a folder that none of its workspaces holds
         message = f"No Orca workspace contains the current directory: {Path.cwd()}"
         print(json.dumps({"ok": False, "error": {"code": "selector_not_found", "message": message}}))

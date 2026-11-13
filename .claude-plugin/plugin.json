@@ -1,6 +1,6 @@
 {
   "name": "orchestration-kit",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Gated worker dispatch, master succession and a review workflow on top of the Orca CLI, plus an installer for the repository harness, reassembled for Windows from baksohyeon/mogui-ADE-orchestrator and baksohyeon/mogui-agent-harness.",
   "author": { "name": "getCurrentThread" },
   "repository": "https://github.com/getCurrentThread/orchestration-kit",

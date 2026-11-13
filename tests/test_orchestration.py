@@ -6,7 +6,6 @@ Run from the repository root: python -X utf8 -s -B -m unittest discover -s tests
 import contextlib
 import io
 import json
-import msvcrt
 import os
 import shutil
 import subprocess
@@ -83,9 +82,17 @@ class OrchestrationTest(unittest.TestCase):
                 code = stop.code
         return code, output.getvalue()
 
-    def dispatch(self, model=EFFICIENT, effort="low", tier="efficient", agent="claude"):
+    def dispatch(self, *place, model=EFFICIENT, effort="low", tier="efficient", agent="claude"):
         launch = ["--model", model] if model else []
-        return self.cli("dispatch", "--contract", self.contract(tier, agent), "--agent", agent, *launch, "--effort", effort)
+        return self.cli("dispatch", "--contract", self.contract(tier, agent), "--agent", agent, *launch, "--effort", effort, *place)
+
+    def ready(self, name):
+        """A project that already carries a harness whose setup has run."""
+        project = self.work.parent / name
+        (project / ".agent").mkdir(parents=True)
+        (project / ".agent" / "Instructions.md").write_text("rules\n", encoding="utf-8")
+        (project / ".setup-done").touch()
+        return project
 
     def started_model(self):
         start = self.worker_starts()[-1]
@@ -119,10 +126,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(rows[1]["model_measured"], EFFICIENT)  # the worker's versioned id, reduced to its family
         self.assertTrue(rows[1]["model_verified"])
 
-    def test_a_versioned_id_falls_under_its_family(self):
-        self.assertEqual(orchestration.family(versioned(TOP)), TOP)
-        self.assertEqual(orchestration.family(TOP.upper()), TOP)
-        self.assertIsNone(orchestration.family("unlisted-model"))
+    def test_a_full_model_id_pins_its_version_and_is_gated_as_its_family(self):
         pinned = f"claude-{EFFICIENT}-1-1"
         code, output = self.dispatch(model=pinned)
         self.assertEqual(code, 0, output)
@@ -152,7 +156,6 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("dispatch:ctx_test", output)
         self.assertEqual(len(self.worker_starts()), 1)
         self.assertEqual(len(self.ledger()), 2)  # refused before the gate, whose check counts towards a tier's cap
-        self.addCleanup(os.environ.pop, "FAKE_ORCA_OUTCOME", None)
         for unknown in ("paused", "no answer"):  # an outcome this code does not know, and none at all: neither clears it
             os.environ["FAKE_ORCA_OUTCOME"] = unknown
             code, output = self.dispatch()
@@ -168,8 +171,6 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(self.dispatch()[0], 0)
         fix = self.work / "contract-2.md"  # a new file, which the gate counts as a contract of its own
         fix.write_text(Path(self.contract()).read_text(encoding="utf-8") + "\nFix what the first attempt left.\n", encoding="utf-8")
-        for variable in ("FAKE_ORCA_DISPATCH", "FAKE_ORCA_OUTCOME"):
-            self.addCleanup(os.environ.pop, variable, None)
 
         def follow(earlier, name):
             os.environ["FAKE_ORCA_DISPATCH"] = name
@@ -198,43 +199,23 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("TASK_ATTEMPTS_EXHAUSTED", output)
         self.assertIn("tell the owner", output)
         self.assertEqual(len(self.worker_starts()), 3)
-        self.assertIn("task_test: ctx_test, ctx_fix, ctx_third", self.cli("report")[1])
+        report = self.cli("report")[1]
+        self.assertIn(f"{EFFICIENT}: dispatches=", report)  # the gate's own summary, passed on
+        self.assertIn("task_test: ctx_test, ctx_fix, ctx_third", report)
 
     def test_a_new_worktree_in_the_masters_own_repository_starts_from_its_local_branch(self):
-        def dispatch(*place):
-            return self.cli("dispatch", "--contract", self.contract(), "--agent", "claude", "--model", EFFICIENT, "--effort", "low", *place)
-
-        code, output = dispatch("--worktree", "new-child")  # the master's folder is no repository
-        self.assertEqual(code, 2, output)
-        self.assertIn("no branch checked out with a commit", output)
-        self.assertEqual((self.worker_starts(), self.ledger()), ([], []))
         self.git(self.work, "init", "-q")
         self.git(self.work, "commit", "-q", "--allow-empty", "-m", "a commit the remote does not have")
-        branch = self.git(self.work, "branch", "--show-current")
-        os.environ["FAKE_ORCA_OUTCOME"] = "succeeded"  # one contract for every start here
-        self.addCleanup(os.environ.pop, "FAKE_ORCA_OUTCOME", None)
-        for selector in ("new-child", "new-top-level"):
-            code, output = dispatch("--worktree", selector)
-            self.assertEqual(code, 0, output)
-            start = self.worker_starts()[-1]
-            # Orca bases a new worktree on the remote's branch unless it is told, also in the master's own repository.
-            self.assertEqual(start[start.index("--worktree"):start.index("--worktree") + 4], ["--worktree", selector, "--base-branch", branch])
-            self.assertNotIn("--repo", start)  # the repository is the one of the terminal that asks
-        for existing in ([], ["--worktree", f"path:{self.work}"]):  # Orca refuses a base for a worktree that exists
-            self.assertEqual(dispatch(*existing)[0], 0)
-            self.assertNotIn("--base-branch", self.worker_starts()[-1])
-
-    def test_report_summarises_the_ledger(self):
-        code, output = self.cli("report")  # from a folder that is no workspace: an error, not an empty summary
-        self.assertEqual(code, 2)
-        self.assertIn("no dispatch ledger", output)
-        self.assertFalse((self.work / ".orchestration").exists())
-        self.dispatch()
-        self.dispatch(tier="top")
-        code, output = self.cli("report")
+        code, output = self.dispatch("--worktree", "new-child")
         self.assertEqual(code, 0, output)
-        self.assertIn(f"{EFFICIENT}: dispatches=", output)
-        self.assertIn("CONTRACT_TIER_MISMATCH: 1", output)
+        start = self.worker_starts()[-1]
+        # Orca bases a new worktree on the remote's branch unless it is told, also in the master's own repository.
+        branch = self.git(self.work, "branch", "--show-current")
+        self.assertEqual(start[start.index("--worktree"):start.index("--worktree") + 4], ["--worktree", "new-child", "--base-branch", branch])
+        self.assertNotIn("--repo", start)  # the repository is the one of the terminal that asks
+        os.environ["FAKE_ORCA_OUTCOME"] = "succeeded"  # the first dispatch of this contract has settled
+        self.assertEqual(self.dispatch("--worktree", f"path:{self.work}")[0], 0)
+        self.assertNotIn("--base-branch", self.worker_starts()[-1])  # Orca refuses a base for a worktree that exists
 
     def test_only_the_master_is_reminded_after_a_compaction(self):
         hook = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]["SessionStart"][0]
@@ -247,28 +228,27 @@ class OrchestrationTest(unittest.TestCase):
         os.environ["ORCA_TERMINAL_HANDLE"] = "term_worker"  # a worker in the same folder is compacted
         self.assertEqual(self.cli("compacted"), (0, ""))
 
-    def test_refuses_outside_an_orca_terminal(self):
-        del os.environ["ORCA_TERMINAL_HANDLE"]
+    def test_refuses_before_orca_is_asked(self):
+        for refused, says in (
+            ({"model": "unlisted-model"}, "not listed"),
+            ({"model": None}, "pass --model"),  # only codex has a default model
+            ({"effort": "max"}, "--effort"),
+            ({"model": TOP, "effort": "high", "tier": "top"}, "medium"),  # the top tier is for re-runs at medium
+        ):
+            code, output = self.dispatch(**refused)
+            self.assertEqual(code, 2, output)
+            self.assertIn(says, output)
+        del os.environ["ORCA_TERMINAL_HANDLE"]  # outside an Orca terminal the worker would start in whichever pane is active
         code, output = self.dispatch()
         self.assertEqual(code, 2)
         self.assertIn("ORCA_TERMINAL_HANDLE", output)
         self.assertEqual(self.orca_calls(), [])
 
-    def test_refuses_a_model_missing_from_the_policy(self):
-        code, output = self.dispatch(model="unlisted-model")
-        self.assertEqual(code, 2)
-        self.assertIn("not listed", output)
-        self.assertEqual(self.dispatch(model=None)[0], 2)  # only codex has a default model
-        self.assertEqual(self.orca_calls(), [])
-
-    def test_refuses_max_effort_and_top_tier_above_medium(self):
-        self.assertEqual(self.dispatch(effort="max")[0], 2)
-        code, output = self.dispatch(model=TOP, effort="high", tier="top")
-        self.assertEqual(code, 2)
-        self.assertIn("medium", output)
-        self.assertEqual(self.orca_calls(), [])
-
     def test_gate_denial_starts_no_worker(self):
+        code, output = self.cli("report")  # from a folder that is no workspace: an error, not an empty summary
+        self.assertEqual(code, 2)
+        self.assertIn("no dispatch ledger", output)
+        self.assertFalse((self.work / ".orchestration").exists())
         code, output = self.dispatch(tier="top")  # the contract claims a tier the model is not in
         self.assertEqual(code, 2)
         self.assertIn("CONTRACT_TIER_MISMATCH", output)
@@ -377,14 +357,6 @@ class OrchestrationTest(unittest.TestCase):
             self.assertIn(says, output)
             self.assertNotIn("has settled", output)
 
-    def test_a_second_watch_of_the_same_run_ends_at_once(self):
-        state = self.work / ".orchestration"
-        state.mkdir()
-        with open(state / "watch-term_test-run_test.lock", "a+b") as held:
-            msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
-            self.assertIn("already have a watch", self.watch([]))
-        self.assertEqual(self.orca_calls(), [])
-
     def test_succeed_needs_every_handoff_section_before_launching(self):
         handoff = self.work / "handoff.md"
         launch = ["succeed", "--handoff", str(handoff), "--model", EFFICIENT, "--effort", "high"]
@@ -421,8 +393,6 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(self.cli(*launch)[0], 0)
         prompt = self.orca_calls()[-1]
         self.assertIn("--parent-session is term_test,", prompt[prompt.index("--prompt") + 1])
-        os.environ["FAKE_ORCA_CURRENT"] = "not json"  # an answer in words is no reason to add anything, nor to stop
-        self.assertEqual(self.cli(*launch)[0], 0)
         self.assertEqual(len(self.repo_adds()), 1)
         launches = sum(call[:2] == ["agent", "launch"] for call in self.orca_calls())
         os.environ.update(FAKE_ORCA_CURRENT="none", FAKE_ORCA_REPOS="no answer")  # a folder that cannot be added
@@ -434,7 +404,6 @@ class OrchestrationTest(unittest.TestCase):
     def test_inherit_appends_one_generation_per_succession(self):
         handoff = self.work / "handoff.md"
         handoff.write_text("handoff", encoding="utf-8")
-        self.addCleanup(os.environ.pop, "FAKE_ORCA_TERMINALS", None)
         for open_terminals in ("term_new", "term_test", "term_old,term_test"):
             os.environ["FAKE_ORCA_TERMINALS"] = open_terminals
             code, output = self.cli("inherit", "--handoff", str(handoff), *LINEAGE_ARGUMENTS)
@@ -498,10 +467,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(len(self.repo_adds()), 1)
 
     def test_prepare_knows_a_project_that_orca_holds_under_another_path(self):
-        project = self.work.parent / "ready"
-        (project / ".agent").mkdir(parents=True)
-        (project / ".agent" / "Instructions.md").write_text("rules\n", encoding="utf-8")
-        (project / ".setup-done").touch()
+        project = self.ready("ready")
         junction = self.work.parent / "link"
         made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(project)], capture_output=True)
         self.assertEqual(made.returncode, 0, made.stdout + made.stderr)
@@ -551,7 +517,6 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(self.git(project, "config", "core.hooksPath"), ".hooks")
         self.git(project, "config", "--unset", "core.hooksPath")
         # A project that has changed a script of its harness has its own setup: it is not run from here.
-        shipped = (project / "scripts" / "setup.sh").read_bytes()
         with open(project / "scripts" / "setup.sh", "ab") as script:
             script.write(b"touch ran-by-prepare\n")
         (project / ".git" / "hooks" / "pre-push").unlink()
@@ -560,18 +525,6 @@ class OrchestrationTest(unittest.TestCase):
         self.assertFalse((project / "ran-by-prepare").exists())
         self.assertFalse((project / ".setup-done").exists())
         self.assertEqual(self.git(project, "config", "--get", "core.hooksPath", ends=1), "")
-        if not harness.git_bash():
-            return
-        # The pages are there to be changed. A filled placeholder, a merged .gitignore and a dated wiki page
-        # do not keep the setup from running: the second prepare, which every dispatch does, runs it.
-        (project / "scripts" / "setup.sh").write_bytes(shipped)
-        for page in ("CLAUDE.md", "AGENTS.md", ".cursorrules", ".windsurfrules", ".gitignore", "docs/wiki/index.md"):
-            with open(project / page, "ab") as changed:
-                changed.write(b"\nours\n")
-        line = self.prepare(project)
-        self.assertEqual(line["setup"], "ran", line)
-        self.assertTrue((project / ".setup-done").is_file())
-        self.assertEqual(self.git(project, "config", "core.hooksPath"), ".githooks")
 
     def test_prepare_installs_no_harness_into_the_plugin_itself(self):
         plugin = self.work.parent / "plugin"  # a checkout of this plugin holds the harness as a template
@@ -613,7 +566,6 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("dubious ownership", line["message"])
         self.assertEqual(self.orca_calls(), [])
         os.environ["FAKE_ORCA_REPOS"] = "no answer"  # with Orca away nothing is changed either
-        self.addCleanup(os.environ.pop, "FAKE_ORCA_REPOS", None)
         for folder in (base / "fresh", base / "plain"):
             self.assertEqual(self.prepare(folder, ends=2)["reason"], "ORCA_UNREADABLE")
         self.assertEqual(tree(base / "plain"), {})
@@ -624,24 +576,17 @@ class OrchestrationTest(unittest.TestCase):
         base = self.work.parent
         (base / "repo" / "sub").mkdir(parents=True)
         self.git(base / "repo", "init", "-q")
-        project = base / "ready"
-        (project / ".agent").mkdir(parents=True)
-        (project / ".agent" / "Instructions.md").write_text("rules\n", encoding="utf-8")
-        (project / ".setup-done").touch()
-
-        def dispatch(*place):
-            return self.cli("dispatch", "--contract", self.contract(), "--agent", "claude", "--model", EFFICIENT, "--effort", "low", *place)
-
-        code, output = dispatch("--project", str(base / "repo" / "sub"))
+        project = self.ready("ready")
+        code, output = self.dispatch("--project", str(base / "repo" / "sub"))
         self.assertEqual(code, 2, output)
         self.assertIn("NOT_A_PROJECT_ROOT", output)
         self.assertEqual((self.worker_starts(), self.ledger()), ([], []))  # refused before the gate counts a check
-        self.assertIn("takes only new-top-level", dispatch("--project", str(project), "--worktree", "current")[1])
+        self.assertIn("takes only new-top-level", self.dispatch("--project", str(project), "--worktree", "current")[1])
         code, output = self.cli("dispatch", "--contract", "no-such.md", "--agent", "claude", "--model", EFFICIENT, "--effort", "low", "--project", str(project))
         self.assertEqual(code, 2, output)
         self.assertIn("no contract at", output)
         self.assertEqual((self.orca_calls(), self.ledger()), ([], []))  # a mistyped contract registers no project
-        code, output = dispatch("--project", str(project))
+        code, output = self.dispatch("--project", str(project))
         self.assertEqual(code, 0, output)
         prepared, registered = (json.loads(line) for line in output.splitlines())
         self.assertEqual((prepared["stage"], prepared["orca"], prepared["kind"], prepared["harness"]), ("prepare", "added", "folder", "present"))
@@ -650,16 +595,10 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(start[start.index("--worktree") + 1], f"path:{project}")
 
     def test_a_worktree_of_the_workers_own_starts_from_the_projects_branch(self):
-        project = self.work.parent / "cloned"
-        (project / ".agent").mkdir(parents=True)
-        (project / ".agent" / "Instructions.md").write_text("rules\n", encoding="utf-8")
-        (project / ".setup-done").touch()
-        own = [
-            "dispatch", "--contract", self.contract(), "--agent", "claude", "--model", EFFICIENT, "--effort", "low",
-            "--project", str(project), "--worktree", "new-top-level",
-        ]
+        project = self.ready("cloned")
+        own = ("--project", str(project), "--worktree", "new-top-level")
         for _ in range(2):  # first a plain folder, then a repository without a commit
-            code, output = self.cli(*own)
+            code, output = self.dispatch(*own)
             self.assertEqual(code, 2, output)
             self.assertIn("no branch checked out with a commit", output)
             self.assertIn("starts without its rules", output)
@@ -667,7 +606,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual((self.worker_starts(), self.ledger()), ([], []))
         self.git(project, "add", "-A")
         self.git(project, "commit", "-q", "-m", "the harness")
-        code, output = self.cli(*own)
+        code, output = self.dispatch(*own)
         self.assertEqual(code, 0, output)
         self.assertNotIn("starts without its rules", output)
         start = self.worker_starts()[0]

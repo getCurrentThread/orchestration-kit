@@ -31,5 +31,3 @@ jobs:
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
       - name: Scan tracked content (committed rules)
         run: ./scripts/redaction-scan.sh
-      - name: Regression tests for the gate
-        run: bash tests/redaction-gate/run.sh

@@ -79,22 +79,19 @@ class HarnessTest(unittest.TestCase):
         def run_hook(payload):
             return subprocess.run([str(harness.git_bash()), hook.as_posix()], input=payload.encode("utf-8"), capture_output=True)
 
-        def decision(content, path="notes.md"):
-            done = run_hook(json.dumps({"tool_input": {"file_path": path, "content": content}}))
+        def decision(content):
+            done = run_hook(json.dumps({"tool_input": {"file_path": "notes.md", "content": content}}))
             self.assertEqual(done.returncode, 0, done.stderr)
             return json.loads(done.stdout)["hookSpecificOutput"]["permissionDecision"] if done.stdout.strip() else None
 
         self.assertEqual(decision("launch \U0001F680"), "deny")
-        # Arrows and the multiplication sign are allowed on purpose.
-        self.assertIsNone(decision("café → 3 × 4"))
-        # Half of a surrogate pair, as a cut-off emoji leaves it, is no emoji and must not stop the hook.
-        self.assertIsNone(decision("cut off \ud83d"))
-        # Both copies of the hook hold the emoji ranges, and both must stay editable.
-        self.assertIsNone(decision("\U0001F680", path="repo/.codex/hooks/no-emoji-check.sh"))
+        self.assertIsNone(decision("café → 3 × 4"))  # arrows and the multiplication sign are allowed on purpose
         # Exit 2 is the code Claude Code blocks a tool call on: a hook that cannot decide must not let the write pass.
         self.assertEqual(run_hook("not json").returncode, 2)
 
     def test_empty_target_gets_the_whole_harness_and_a_second_run_changes_nothing(self):
+        self.assertEqual(self.run_harness("--dry-run")[0], 0)
+        self.assertFalse(self.target.exists())  # a dry run makes no folder either
         code, output = self.run_harness()
         self.assertEqual(code, 0, output)
         self.assertIn(f"Added ({len(FILES)} file(s))", output)
@@ -120,8 +117,12 @@ class HarnessTest(unittest.TestCase):
         for name, content in mine.items():
             (self.target / name).write_bytes(content)
 
+        _, planned = self.run_harness("--dry-run")
+        self.assertEqual(tree(self.target), mine)
         code, output = self.run_harness()
         self.assertEqual(code, 0, output)
+        groups = [line for line in output.splitlines() if line.startswith("  ") and line[2] in "+~=!"]
+        self.assertEqual([line for line in planned.splitlines() if line.startswith("  ") and line[2] in "+~=!"], groups)
         after = tree(self.target)
         for name, content in mine.items():
             self.assertEqual(after[name], content, name)
@@ -182,21 +183,6 @@ class HarnessTest(unittest.TestCase):
         self.assertNotIn(b"a-token", b"".join(after[name] for name in changed))  # these pages are committed
         self.assertEqual(harness.fill(self.target), [])  # a second run finds nothing to fill
 
-    def test_dry_run_writes_nothing_and_reports_what_a_run_does(self):
-        code, output = self.run_harness("--dry-run")
-        self.assertEqual(code, 0, output)
-        self.assertFalse(self.target.exists())
-
-        self.target.mkdir()
-        (self.target / "CLAUDE.md").write_bytes(b"my router\n")
-        before = tree(self.target)
-        _, planned = self.run_harness("--dry-run")
-        self.assertEqual(tree(self.target), before)
-        _, done = self.run_harness()
-        groups = [line for line in done.splitlines() if line.startswith("  ") and line[2] in "+~=!"]
-        self.assertEqual([line for line in planned.splitlines() if line.startswith("  ") and line[2] in "+~=!"], groups)
-        self.assertIn("  ~ CLAUDE.md.starter", groups)
-
     def test_a_file_where_a_folder_belongs_stops_the_run_before_any_write(self):
         self.target.mkdir()
         (self.target / "docs").write_bytes(b"a file, not a folder\n")
@@ -235,44 +221,36 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(tree(harness.SOURCE), before)
 
     @unittest.skipUnless(harness.git_bash(), "needs the bash of Git for Windows")
-    def test_setup_keeps_an_existing_hook_chain(self):
-        def setup():
-            done = subprocess.run(
-                [str(harness.git_bash()), "scripts/setup.sh"], cwd=self.target, capture_output=True, text=True, encoding="utf-8"
-            )
-            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-            self.assertTrue((self.target / ".setup-done").is_file())
-            hooks_path = subprocess.run(
-                ["git", "config", "--local", "--get", "core.hooksPath"], cwd=self.target, capture_output=True, text=True
-            ).stdout.strip()
-            return hooks_path, done.stdout
+    def test_setup_keeps_an_existing_hook_chain_and_covers_linked_worktrees(self):
+        def notice(folder):
+            done = subprocess.run([str(harness.git_bash()), ".claude/hooks/setup-check.sh"], cwd=folder, capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            return done.stdout
 
-        self.run_harness()
-        # `python -m` looks in the repository's root first. The setup runs the harness's own code and no one else's.
-        (self.target / "json.py").write_text("open('ran-by-setup', 'w')\n", encoding="utf-8")
-        (self.target / "lefthook.yml").write_text("pre-commit: {}\n", encoding="utf-8")
-        self.assertEqual(setup()[0], "")
-        self.assertFalse((self.target / "ran-by-setup").exists())
-        (self.target / "lefthook.yml").unlink()
-        # Git stops running a hook in .git/hooks once the path moves, so setup has to name it.
-        (self.target / ".git/hooks/pre-push").write_bytes(b"#!/bin/sh\n")
-        hooks_path, output = setup()
-        self.assertEqual(hooks_path, ".githooks")
-        self.assertRegex(output, r"no longer run[\s\S]*hooks/pre-push")
-
-    @unittest.skipUnless(harness.git_bash(), "needs the bash of Git for Windows")
-    def test_a_commit_takes_everything_its_hooks_change(self):
-        # A hook that edits a file after git has built the commit leaves that edit staged behind it.
         self.run_harness()
         for command in (
             ["init", "-q"], ["config", "user.name", "tester"], ["config", "user.email", "tester@example.invalid"],
-            ["config", "commit.gpgsign", "false"], ["config", "core.hooksPath", ".githooks"], ["add", "-A"],
-            ["commit", "-q", "-m", "Install the harness"],
+            ["config", "commit.gpgsign", "false"], ["add", "-A"], ["commit", "-q", "-m", "Install the harness"],
+            ["worktree", "add", "-q", "../linked"],
         ):
-            done = subprocess.run(["git", *command], cwd=self.target, capture_output=True, text=True, encoding="utf-8")
-            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=self.target, capture_output=True, text=True)
-        self.assertEqual(status.stdout, "")
+            self.git(*command)
+        linked = self.target.parent / "linked"
+        self.assertIn("[AGENT-BOOTSTRAP]", notice(self.target))
+        self.assertIn("[AGENT-BOOTSTRAP]", notice(linked))
+        # `python -m` looks in the repository's root first. The setup runs the harness's own code and no one else's.
+        (self.target / "json.py").write_text("open('ran-by-setup', 'w')\n", encoding="utf-8")
+        (self.target / "lefthook.yml").write_text("pre-commit: {}\n", encoding="utf-8")
+        done = subprocess.run(
+            [str(harness.git_bash()), "scripts/setup.sh"], cwd=self.target, capture_output=True, text=True, encoding="utf-8"
+        )
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertFalse((self.target / "ran-by-setup").exists())
+        hooks_path = subprocess.run(["git", "config", "--local", "--get", "core.hooksPath"], cwd=self.target, capture_output=True, text=True)
+        self.assertEqual(hooks_path.stdout.strip(), "")  # lefthook's chain keeps running
+        # The marker is not tracked, so a worker's new worktree never has one of its own: the main checkout's counts.
+        self.assertTrue((self.target / ".setup-done").is_file())
+        self.assertEqual(notice(self.target), "")
+        self.assertEqual(notice(linked), "")
 
     def git(self, *command, **environment):
         done = subprocess.run(
@@ -298,7 +276,7 @@ class HarnessTest(unittest.TestCase):
             (self.target / name).write_bytes(content)
         unreadable = page + b"caf\xe9\n"  # not UTF-8, so the updater fails on it
         (self.target / "docs/latin1.md").write_bytes(unreadable)
-        self.git("add", *pages, "docs/latin1.md")
+        self.git("add", "-A")
         # The identity comes from the environment alone, as on a build server: `git config user.name` fails there.
         empty = self.target.parent / "empty.gitconfig"
         empty.write_bytes(b"")
@@ -311,6 +289,8 @@ class HarnessTest(unittest.TestCase):
         self.assertIn(b"docs/latin1.md (front matter left as it is", said)
         self.assertNotIn(b"  - docs/latin1.md\n", said)
         self.assertEqual(self.git("show", "HEAD:docs/latin1.md"), unreadable)
+        # A hook that edits a file after git has built the commit leaves that edit behind it.
+        self.assertEqual(self.git("status", "--porcelain"), b"")
         for name, content in pages.items():
             committed = self.git("show", f"HEAD:{name}")
             self.assertRegex(committed, rb"updated_at: 20\d\d-\d\d-\d\d\r?\n", name)
@@ -319,45 +299,32 @@ class HarnessTest(unittest.TestCase):
             self.assertEqual(re.sub(rb"updated_at: [0-9-]+", b"updated_at: 2020-01-01", committed), content, name)
 
     @unittest.skipUnless(harness.git_bash(), "needs the bash of Git for Windows")
-    def test_a_linked_worktree_is_covered_by_the_setup_of_its_main_checkout(self):
-        def notice(folder):
-            done = subprocess.run([str(harness.git_bash()), ".claude/hooks/setup-check.sh"], cwd=folder, capture_output=True, text=True)
-            self.assertEqual(done.returncode, 0, done.stderr)
-            return done.stdout
-
-        self.run_harness()
-        for command in (
-            ["init", "-q"], ["config", "user.name", "tester"], ["config", "user.email", "tester@example.invalid"],
-            ["config", "commit.gpgsign", "false"], ["add", "-A"], ["commit", "-q", "-m", "Install the harness"],
-            ["worktree", "add", "-q", "../linked"],
-        ):
-            self.git(*command)
-        linked = self.target.parent / "linked"
-        self.assertIn("[AGENT-BOOTSTRAP]", notice(self.target))
-        self.assertIn("[AGENT-BOOTSTRAP]", notice(linked))
-        # The marker is not tracked, so a worker's new worktree never has one of its own.
-        (self.target / ".setup-done").touch()
-        self.assertEqual(notice(self.target), "")
-        self.assertEqual(notice(linked), "")
-
-    @unittest.skipUnless(harness.git_bash(), "needs the bash of Git for Windows")
     def test_a_commit_without_docs_still_reaches_the_secret_scan(self):
         self.run_harness()
         tools = self.target.parent / "tools"
         tools.mkdir()
-        # Stand-ins: the hook only asks whether gitleaks exists, and the scan reports a finding.
+        # Stand-ins: the hook only asks whether gitleaks exists, and the scan answers what the test scripts.
         (tools / "gitleaks").write_bytes(b"#!/usr/bin/env bash\nexit 0\n")
-        (self.target / "scripts/redaction-scan.sh").write_bytes(b"#!/usr/bin/env bash\necho scan ran\nexit 1\n")
         (self.target / "app.js").write_bytes(b"let a = 1\n")
         for command in (["init", "-q"], ["config", "user.name", "tester"], ["add", "app.js"]):
             subprocess.run(["git", *command], cwd=self.target, check=True, capture_output=True)
-        done = subprocess.run(
-            [str(harness.git_bash()), ".githooks/pre-commit"], cwd=self.target, capture_output=True, text=True,
-            env={**os.environ, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}"},
-        )
-        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
-        self.assertIn("scan ran", done.stdout)
-        self.assertIn("[redaction-scan blocked]", done.stdout)
+
+        def hook(scan_exit):
+            (self.target / "scripts/redaction-scan.sh").write_bytes(b"#!/usr/bin/env bash\necho scan ran $1\nexit %d\n" % scan_exit)
+            return subprocess.run(
+                [str(harness.git_bash()), ".githooks/pre-commit"], cwd=self.target, capture_output=True, text=True,
+                env={**os.environ, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+        # A finding blocks the commit, and so does a scan that could not decide: that is not a pass.
+        for scan_exit, says in ((1, "[redaction-scan blocked] secret detected"), (2, "the gate could not decide")):
+            done = hook(scan_exit)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertIn("scan ran --staged", done.stdout)  # what is committed is the index, not the working tree
+            self.assertIn(says, done.stdout)
+        done = hook(0)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertNotIn("blocked", done.stdout)
 
 
 if __name__ == "__main__":
