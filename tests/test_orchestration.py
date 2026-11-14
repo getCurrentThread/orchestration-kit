@@ -401,6 +401,38 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("ORCA_UNREADABLE", output)
         self.assertEqual(sum(call[:2] == ["agent", "launch"] for call in self.orca_calls()), launches)  # and no launch
 
+    def test_start_carries_a_conversation_from_outside_orca_into_a_fresh_master(self):
+        frames = self.work.parent / "frames.json"
+        os.environ.update(FAKE_ORCA_FRAMES=str(frames), FAKE_ORCA_CURRENT="none")  # a folder Orca has never seen
+        launches = lambda: [call for call in self.orca_calls() if call[:2] == ["agent", "launch"]]
+        self.assertEqual(self.cli("start")[0], 2)  # in an Orca terminal the session is the master itself
+        self.assertEqual(self.orca_calls(), [])
+        del os.environ["ORCA_TERMINAL_HANDLE"]
+        frames.write_text(json.dumps([{"runtime": None, "stale": True}]), encoding="utf-8")  # Orca is closed and stays so
+        code, output = self.cli("start", "--said", "fix the login page")
+        self.assertEqual(code, 2, output)
+        self.assertIn("runtime_unavailable", output)
+        self.assertIn("1. Ask the owner to open the Orca app", output)
+        self.assertEqual([call[0] for call in self.orca_calls()], ["status", "open", "status", "status"])
+        self.assertEqual(tree(self.work), {})  # and nothing was written
+        frames.write_text(json.dumps([{"runtime": None}] * 4 + [{"runtime": "one"}]), encoding="utf-8")  # `open` brings it up
+        code, output = self.cli("start", "--said", "fix the\nlogin page")
+        self.assertEqual(code, 0, output)
+        line = json.loads(output.splitlines()[-1])
+        self.assertEqual((line["terminal"], line["workspace"]), ("term_launched", str(self.work)))
+        add, call = self.repo_adds()[0], launches()[0]
+        self.assertEqual((add[add.index("--path") + 1], add[add.index("--kind") + 1]), (str(self.work), "folder"))
+        self.assertEqual(call[call.index("--surface") + 1], "terminal")  # a master in a chat has no handle to dispatch from
+        self.assertNotIn("--model", call)  # the owner's own default, as in the session that is carried over
+        self.assertIn("the owner's words: fix the login page (end", call[call.index("--prompt") + 1])  # on one line
+        self.assertEqual(tree(self.work), {})  # no harness and no state: the master makes its own
+        self.assertEqual(self.cli("start")[0], 0)  # Orca is up and holds the folder by now
+        self.assertIn("The owner gave no task there", launches()[1][launches()[1].index("--prompt") + 1])
+        self.assertEqual((len(self.repo_adds()), sum(call == ["open"] for call in self.orca_calls())), (1, 2))
+        os.environ["FAKE_ORCA_REPOS"] = "no answer"  # a folder that cannot be added gets no master
+        self.assertEqual(self.cli("start")[0], 2)
+        self.assertEqual(len(launches()), 2)
+
     def test_inherit_appends_one_generation_per_succession(self):
         handoff = self.work / "handoff.md"
         handoff.write_text("handoff", encoding="utf-8")

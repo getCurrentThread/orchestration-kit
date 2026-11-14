@@ -17,15 +17,36 @@ python -X utf8 -s -B "${CLAUDE_PLUGIN_ROOT}/scripts/orchestration.py"
 
 ## Before anything
 
-- Run inside an Orca terminal (`ORCA_TERMINAL_HANDLE` is set): the wrapper refuses to dispatch without it.
-  Do not work around the refusal. Tell the owner, who can continue this conversation from an Orca terminal
-  on this checkout (`claude --resume`), or hand over to a successor: `succeed` works from any terminal, and
-  adds your folder to Orca as a project, without a harness, when Orca does not know it.
+- A master runs in an Orca terminal. Look at `ORCA_TERMINAL_HANDLE` first. When it is empty you are not
+  the master, and the wrapper refuses to dispatch. Do not work around the refusal, and do not stop on it
+  either: do what "Outside Orca" says, and nothing else of this skill.
 - Work from the workspace root. State lives in `.orchestration/` there: `dispatch-ledger.jsonl`,
   `contracts/`, `handoffs/` and `lineage.md`.
 - Load Orca's own guide once (`orca skills get orchestration`). Its rules still apply: start workers and
   end your turn, never poll, never steer through a worker's terminal, never create checkouts yourself.
 - Never call `orca orchestration worker-start` directly: it bypasses the gate and the ledger.
+
+## Outside Orca
+
+From any other terminal, carry the conversation into a fresh master in Orca, on the same checkout. Run this
+from the workspace root, without asking the owner first:
+
+```text
+ORCHESTRATION start --said "<what the owner has asked for so far, in the owner's words>"
+```
+
+Leave `--said` out when the owner has only asked you to act as master. The command starts Orca when it is
+closed, makes the folder a workspace of Orca's, without a harness, and launches the master in a terminal
+there, on the owner's default model. It writes nothing into the folder.
+
+- Exit 0, `"stage": "start"`: the master runs in the terminal the line names, in the tab that is in front
+  in Orca. It starts on a task the owner gave you, and waits for the first task otherwise. Tell the owner
+  where it runs and that tasks go to it there, then stop: you are not the master.
+- `Orca cannot be reached`: follow the numbered steps of the message. Nothing was started, so running the
+  same command again is safe.
+- Any other refusal names what to look at. Do that before a second run, which could start a second master.
+- A conversation that already holds work a sentence cannot carry (decisions, findings, open tracks) goes
+  over as a handoff instead: `succeed` works from any terminal too. See "Hand over to a successor".
 
 ## Dispatch a worker
 

@@ -36,13 +36,14 @@ next session start or `/reload-plugins`. `claude --plugin-dir <clone>` tries it 
 
 ## Use
 
-In a Claude Code session started in an Orca terminal, ask it to act as master. The
-`orchestration-kit:master` skill (`skills/master/SKILL.md`) holds the whole procedure, and each script
-explains its commands with `--help`.
+Ask a Claude Code session to act as master (`/orchestration-kit:master`). In an Orca terminal that session
+is the master. In any other terminal it starts Orca if Orca is closed, and carries the conversation into a
+fresh master in an Orca terminal on the same checkout (`start`). The `orchestration-kit:master` skill
+(`skills/master/SKILL.md`) holds the whole procedure, and each script explains its commands with `--help`.
 
 | Piece | Path |
 |---|---|
-| Wrapper (`prepare`, `dispatch`, `watch`, `succeed`, `inherit`, `report`) | `scripts/orchestration.py` |
+| Wrapper (`prepare`, `dispatch`, `watch`, `start`, `succeed`, `inherit`, `report`) | `scripts/orchestration.py` |
 | Repository harness installer (`<repository root> [--dry-run]`) | `scripts/harness.py` |
 | Repository harness files | `harness/` |
 | Model families, tiers and caps | `config/model-tier-policy.json` |

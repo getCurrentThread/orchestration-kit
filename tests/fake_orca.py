@@ -1,6 +1,6 @@
 """Stand-in for the Orca CLI in tests: logs every call and replays the JSON shapes of Orca 1.4.257.
 
-`worktree current` was measured on 1.4.258.
+`worktree current`, `agent launch` and the two answers of `status` while the app is closed were measured on 1.4.258.
 """
 
 import json
@@ -92,7 +92,13 @@ elif command == "orchestration worker-show":
 elif command == "orchestration dispatch-show":
     result = {"dispatch": {"id": "ctx_test", "task_id": "task_test", "status": "dispatched"}}
 elif command == "agent launch":
-    result = {"outcome": {"kind": "terminal"}}
+    result = {
+        "outcome": {"kind": "terminal", "handle": "term_launched"},
+        "worktreeId": f"00000000::{folder}",
+        "prompt": {"delivery": "submit", "outcome": "handed-to-terminal"},
+    }
+elif arguments[0] == "open":
+    result = {}  # the wrapper starts the app with it and reads nothing of what it prints
 elif command == "worktree current":
     if os.environ.get("FAKE_ORCA_CURRENT") == "none":  # what Orca says in a folder that none of its workspaces holds
         message = f"No Orca workspace contains the current directory: {Path.cwd()}"
@@ -122,7 +128,12 @@ elif command == "terminal list":
     result = {"terminals": [{"handle": handle} for handle in handles], "totalCount": len(handles), "truncated": False}
 elif arguments[0] == "status":
     runtime = frame()["runtime"]
-    result = {"app": {"running": bool(runtime)}, "runtime": {"state": "ready", "runtimeId": runtime} if runtime else {"state": "not_running"}}
+    if frame().get("stale"):  # no app runs, and Orca's CLI still tries to connect: found so once, the cause not looked into
+        error = {"code": "runtime_unavailable", "message": "This terminal could not connect to Orca."}
+        print(json.dumps({"id": "local", "ok": False, "error": error, "_meta": {"runtimeId": None}}))
+        sys.exit(1)
+    closed = {"state": "not_running", "reachable": False, "runtimeId": None}  # after Orca was closed by its window
+    result = {"app": {"running": bool(runtime)}, "runtime": {"state": "ready", "runtimeId": runtime} if runtime else closed}
 elif command in ("orchestration worker-list", "orchestration inbox") and frame().get("slow"):
     sys.exit(1)  # no answer, as from a call that ran into its time limit
 elif command == "orchestration worker-list" and frame().get("refuses"):

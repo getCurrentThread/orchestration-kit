@@ -4,6 +4,7 @@ Run from the workspace root as `python -X utf8 -s -B orchestration.py <command>`
   prepare   make a project directory ready for a worker: known to Orca, and carrying the repository harness
   dispatch  check a contract with the vendored dispatch gate, start one Orca worker, register it
   watch     wait for a Run's workers; return when the master must act and Orca has not woken it
+  start     from a terminal outside Orca: start a fresh master in Orca on this checkout, with what the owner said
   succeed   validate a handoff document and launch a successor master in Orca
   inherit   append the succession to the lineage ledger (run by the successor)
   report    summarise the dispatch ledger: models, denials, tiers, overrides
@@ -50,6 +51,7 @@ HANDOFF_HEADINGS = (
 # taken for "settled".
 SETTLED = ("succeeded", "failed")
 ATTEMPTS = 3  # at one task; a fourth rarely differs from the third, and the contract or the task has to change
+OPEN_SECONDS = 120  # for `orca open` to bring the app up
 HANDOFF_TEMPLATE = ROOT / "skills" / "master" / "handoff-template.md"
 ROLES = (
     "Architecture", "Research", "Reference Implementation", "Feature Implementation",
@@ -481,7 +483,10 @@ def dispatch(args: argparse.Namespace) -> int:
     if not handle:
         # Outside an Orca terminal, worker-start borrows the identity of whichever pane is active:
         # the worker starts in that pane's workspace and reports into that pane's Run.
-        return fail("ORCA_TERMINAL_HANDLE is not set; run the master inside an Orca terminal")
+        return fail(
+            "ORCA_TERMINAL_HANDLE is not set; run the master inside an Orca terminal. `start` opens one on this "
+            "checkout and carries the conversation into a fresh master there"
+        )
     # Orca refuses --effort without --model, so a Codex worker needs a model string as well.
     model = args.model or (codex_model() if args.agent == "codex" else None)
     if not model:
@@ -630,7 +635,10 @@ def orca_answer(*arguments: str) -> dict:
         done = run([orca(), *arguments, "--json"], timeout=90)
     except OSError as error:
         # The CLI itself does not start. That is not Orca being away, and waiting does not mend it.
-        raise OrcaMissing(f"the Orca CLI `{orca()}` cannot be run: {error}") from error
+        raise OrcaMissing(
+            f"the Orca CLI `{orca()}` cannot be run: {error}. Nothing was changed. See that Orca is installed and that "
+            "`orca status` answers in this terminal, then run this again"
+        ) from error
     except subprocess.TimeoutExpired:
         return {}
     try:
@@ -647,6 +655,11 @@ def orca_result(*arguments: str) -> dict | None:
     answer = orca_answer(*arguments)
     result = answer.get("result") if answer.get("ok") else None
     return result if isinstance(result, dict) else None
+
+
+def runtime_id() -> str | None:
+    """Return the id of the Orca runtime that answers, or None while none does: away, starting or too slow."""
+    return ((orca_result("status") or {}).get("runtime") or {}).get("runtimeId")
 
 
 def unknown_shape(key: str) -> str:
@@ -677,7 +690,7 @@ def observe(run_id: str) -> tuple[str, list[dict], int] | str | None:
     # shortcut: a status answer without a runtime id is read as Orca being away, however it is worded, because
     # what Orca says while it starts has not been measured. A renamed field would make this watch wait for ever;
     # tell the two apart once those states are known.
-    runtime = ((orca_result("status") or {}).get("runtime") or {}).get("runtimeId")
+    runtime = runtime_id()
     if not runtime:
         return None
     workers: list[dict] = []
@@ -949,6 +962,100 @@ def handoff_problems(document: str) -> list[str]:
     return problems
 
 
+def workspace_known() -> bool:
+    """See that a workspace of Orca's holds the current folder, which a launch needs, and say whether one does."""
+    unknown = orca_answer("worktree", "current").get("error")  # text when Orca does not answer in JSON
+    if isinstance(unknown, dict) and unknown.get("code") == "selector_not_found":
+        # A first master that starts outside Orca: its folder is none of Orca's workspaces yet.
+        known = prepare_project(str(Path.cwd()), with_harness=False)
+        print(json.dumps(known, ensure_ascii=False))
+        return known["allow"]
+    return True
+
+
+def start(args: argparse.Namespace) -> int:
+    """Carry a conversation that began outside Orca into a fresh master in an Orca terminal on this checkout.
+
+    A master dispatches from its terminal's handle, and a session in any other terminal has none. `agent launch`
+    with the brief as its prompt is how Orca's own guide hands work to a fresh agent in an existing checkout.
+    """
+    own = os.environ.get("ORCA_TERMINAL_HANDLE")
+    if own:
+        return fail(f"this session already runs in an Orca terminal ({own}): it is the master itself, and starts no second one")
+    if not runtime_id():
+        try:
+            # Without pipes: the app that `orca open` starts inherits them, and a read of them ends only when Orca is closed.
+            # shortcut: that app also inherits this session's environment. Orca 1.4.258 keeps CLAUDECODE and the session
+            # ids out of its terminals and lets a setting through (CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION, measured);
+            # start it with the logon environment once a setting that gets through harms the sessions in Orca.
+            subprocess.run(
+                [orca(), "open"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=OPEN_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            pass  # the status below says whether Orca came up
+        if not runtime_id():
+            status = orca_answer("status")  # an error, or a result whose runtime is not running
+            said = json.dumps(status.get("error") or (status.get("result") or {}).get("runtime") or "nothing")[:300]
+            return fail(
+                "Orca cannot be reached, so no master was started and nothing was changed. `orca open` was tried, and "
+                f"`orca status` still says: {said}\n"
+                "  1. Ask the owner to open the Orca app, and to say when its window is up.\n"
+                "  2. See that `orca status` then shows its runtime as ready, and run this command again as it was.\n"
+                "  3. If Orca does not come up, stop and tell the owner what `orca status` says. A master runs only in "
+                "Orca: dispatch nothing from this terminal."
+            )
+    if not workspace_known():
+        return 2
+    # As one line: what a line break does on the way into the agent's terminal has not been measured.
+    words = " ".join((args.said or "").split())
+    carried = (
+        f"This is what the owner said there, in the owner's words: {words} (end of the owner's words). If the owner "
+        "gave a task there, it is your first task: name it in one line and start on it. If the owner gave none, or "
+        "only said that one will follow, start on nothing: tell the owner in a line or two that you are ready and "
+        "what you expect, and wait for the task."
+    ) if words else (
+        "The owner gave no task there. Tell the owner in a line or two that you are ready for the first task, and "
+        "wait for it."
+    )
+    kickoff = (
+        "You are the orchestration master of this workspace, started fresh. The owner asked a Claude Code session in "
+        "a terminal outside Orca to act as master here. A master dispatches from an Orca terminal, which that session "
+        "did not have, so it started you in its place and has stopped: you are the only master, and nothing has been "
+        f"dispatched. Load the orchestration-kit:master skill and do what its section Before anything says. {carried}"
+    )
+    launch = run([
+        # --surface as for a successor: a master in a chat has no handle to dispatch from. No --model and no --effort:
+        # the agent starts as a new agent tab of the owner's does, which is how the owner's own session started.
+        orca(), "agent", "launch", "--agent", "claude", "--surface", "terminal", "--focus", "--prompt", kickoff, "--json",
+    ])
+    try:
+        result = json.loads(launch.stdout)["result"]
+        terminal = result["outcome"]["handle"] if result["outcome"]["kind"] == "terminal" else None
+        delivered = result["prompt"]["outcome"]
+    except (ValueError, KeyError, TypeError):
+        terminal = delivered = None
+    here = Path.cwd()
+    if launch.returncode != 0 or not isinstance(terminal, str):
+        print(launch.stdout or launch.stderr)
+        return fail(
+            "orca agent launch named no terminal with a master in it. Look before you run this again, because a second "
+            f"run would start a second master: `orca terminal list --worktree path:{here} --json`"
+        )
+    if delivered not in ("journaled", "handed-to-terminal"):  # what Orca's guide calls a delivered brief
+        return fail(
+            f"Orca started terminal {terminal} and does not say that the kickoff reached it (prompt outcome: "
+            f"{delivered!r}). Read its screen with `orca terminal read --terminal {terminal} --screen`, and tell the "
+            "owner what it shows. Do not run this again: the agent is there"
+        )
+    step = (
+        "tell the owner that the master now runs in Orca, in the tab that is in front there, and that it takes the "
+        "first task there. Then stop: this session is not the master, and dispatches nothing"
+    )
+    print(json.dumps({"stage": "start", "allow": True, "terminal": terminal, "workspace": str(here), "next": step}, ensure_ascii=False))
+    return 0
+
+
 def succeed(args: argparse.Namespace) -> int:
     problem = launch_problem(args.model) or top_tier_problem(args.model, args.effort)
     if problem:
@@ -970,13 +1077,8 @@ def succeed(args: argparse.Namespace) -> int:
         f"described in that skill. {parent}Report what you inherited before doing any other work. That report "
         f"does not end your turn: the skill says when to carry on with the handoff's next step and when to wait."
     )
-    unknown = orca_answer("worktree", "current").get("error")  # text when Orca does not answer in JSON
-    if isinstance(unknown, dict) and unknown.get("code") == "selector_not_found":
-        # A first master that starts outside Orca: no workspace of Orca's holds its folder, and a launch needs one.
-        known = prepare_project(str(Path.cwd()), with_harness=False)
-        print(json.dumps(known, ensure_ascii=False))
-        if not known["allow"]:
-            return 2
+    if not workspace_known():
+        return 2
     launch = run([
         orca(), "agent", "launch", "--agent", "claude", "--model", launch_model("claude", args.model), "--effort", args.effort,
         # A master dispatches from a terminal's handle. Without this, the owner's Chat | CLI setting decides.
@@ -1118,6 +1220,13 @@ def main(argv: list[str] | None = None) -> int:
         "(default: 180)",
     )
     sub.set_defaults(handler=watch)
+
+    sub = commands.add_parser("start", help="from a terminal outside Orca: start a fresh master in Orca on this checkout")
+    sub.add_argument(
+        "--said", metavar="WORDS",
+        help="what the owner has asked for so far, in the owner's words; leave it out if that was only to act as master",
+    )
+    sub.set_defaults(handler=start)
 
     sub = commands.add_parser("succeed", help="launch a successor master from a handoff document")
     sub.add_argument("--handoff", required=True)
