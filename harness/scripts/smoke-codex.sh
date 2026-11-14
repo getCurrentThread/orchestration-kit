@@ -192,11 +192,7 @@ if [[ -f AGENTS.md ]]; then
   if [[ ! -f CLAUDE.md ]]; then
     fail "CLAUDE.md missing; cannot verify AGENTS.md router parity"
   else
-    agents_hash="$(shasum AGENTS.md 2>/dev/null | awk '{print $1}')"
-    claude_hash="$(shasum CLAUDE.md 2>/dev/null | awk '{print $1}')"
-    if [[ -z "$agents_hash" || -z "$claude_hash" ]]; then
-      fail "could not hash AGENTS.md/CLAUDE.md for router parity check"
-    elif [[ "$agents_hash" == "$claude_hash" ]]; then
+    if cmp -s AGENTS.md CLAUDE.md; then
       ok "AGENTS.md is byte-identical to CLAUDE.md (real router parity, not just a matching section)"
     else
       fail "AGENTS.md has drifted from CLAUDE.md (not byte-identical) - run scripts/verify-agent-ssot.sh for the full router-sync report"

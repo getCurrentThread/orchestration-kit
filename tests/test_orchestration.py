@@ -53,6 +53,10 @@ class OrchestrationTest(unittest.TestCase):
         (base / "home").mkdir()
         self.log = base / "orca-calls.jsonl"
         environment = {
+            # Without the perl folders of Git for Windows, as on a GitHub runner: see test_harness.BARE_PATH.
+            "PATH": os.pathsep.join(
+                entry for entry in os.environ["PATH"].split(os.pathsep) if not entry.rstrip("\\/").lower().endswith("_perl")
+            ),
             "USERPROFILE": str(base / "home"),
             "ORCA_CLI_COMMAND": str(ROOT / "tests" / "fake-orca.cmd"),
             "CLAUDE_CLI_COMMAND": str(ROOT / "tests" / "fake-claude.cmd"),

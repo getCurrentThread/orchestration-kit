@@ -44,12 +44,10 @@ done
 
 routers=(CLAUDE.md AGENTS.md .cursorrules .windsurfrules)
 if [[ -f CLAUDE.md ]]; then
-  base_hash="$(shasum CLAUDE.md | awk '{print $1}')"
   drift=()
   for f in AGENTS.md .cursorrules .windsurfrules; do
     [[ -f "$f" ]] || continue
-    h="$(shasum "$f" | awk '{print $1}')"
-    [[ "$h" != "$base_hash" ]] && drift+=("$f")
+    cmp -s CLAUDE.md "$f" || drift+=("$f")
   done
   [[ "${#drift[@]}" -eq 0 ]] && ok "4 host router files are in sync" || fail "host router drift: ${drift[*]}"
 fi

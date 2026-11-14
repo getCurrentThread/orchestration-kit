@@ -6,8 +6,8 @@
   `harness/.agent/LICENSE-mogui-agent-harness`, so it travels with every install.
 
 `harness/` is the tree that `scripts/harness.py` installs into a repository. It is derived from the upstream
-tree at the commit above and maintained here, so it lives outside `vendor/`. Of upstream's 108 files, 59 are
-unchanged, 30 are changed and 19 are not in `harness/`; 2 files exist only here. `harness/` has 91 files.
+tree at the commit above and maintained here, so it lives outside `vendor/`. Of upstream's 108 files, 58 are
+unchanged, 31 are changed and 19 are not in `harness/`; 2 files exist only here. `harness/` has 91 files.
 
 To check an unchanged file: `git hash-object --no-filters harness/<path>` equals
 `git rev-parse <commit>:<path>` in a clone of the source.
@@ -42,8 +42,9 @@ To check an unchanged file: `git hash-object --no-filters harness/<path>` equals
 | `.github/workflows/redaction.yml` | Scans pushes to `master` as well as `main`. The step that ran `tests/redaction-gate/run.sh` is gone. |
 | `config/gitleaks.toml` | No longer exempts the path `tests/redaction-gate/`, which is not installed. |
 | `scripts/install-hooks.sh` | Says that `core.hooksPath` holds for every checkout of the repository, and names the hooks in `.git/hooks` that stop running once it is set. |
-| `scripts/setup.sh` | Leaves `core.hooksPath` as it is where the repository has husky or lefthook, and still finishes. Names the install command for `code-review-graph`. |
-| `scripts/verify-agent-ssot.sh` | Requires `.mcp.json`; no longer requires `scripts/ingest.sh`, the two removed hooks or `.githooks/prepare-commit-msg`. Fails when a `.codex/hooks/` file differs from its `.claude/hooks/` original. Its JSON check runs `python3 -I -m json.tool`: without `-I`, a `json.py` in the repository's root ran inside the setup. |
+| `scripts/setup.sh` | Leaves `core.hooksPath` as it is where the repository has husky or lefthook, and still finishes. Names the install command for `code-review-graph`. Compares the router files with `cmp`: see `scripts/smoke-codex.sh`. |
+| `scripts/verify-agent-ssot.sh` | Requires `.mcp.json`; no longer requires `scripts/ingest.sh`, the two removed hooks or `.githooks/prepare-commit-msg`. Fails when a `.codex/hooks/` file differs from its `.claude/hooks/` original. Its JSON check runs `python3 -I -m json.tool`: without `-I`, a `json.py` in the repository's root ran inside the setup. Compares the router files with `cmp`: see `scripts/smoke-codex.sh`. |
+| `scripts/smoke-codex.sh` | Compares `AGENTS.md` with `CLAUDE.md` using `cmp`, as the two scripts above now do. Upstream compares hashes from `shasum`, a perl script. The bash of Git for Windows has perl's folder on its PATH only as a login shell, so on a machine whose own PATH lacks that folder `setup.sh` ended with exit 127 (`shasum: command not found`). |
 | `scripts/wiki-lint.sh` | Check 8, the slang pattern, is gone. |
 | `.agent/workflows/lint.md`, `.agent/workflows/session-start.md` | No longer name the removed slang guard. |
 | `.agent/korean-persona.md` | The vocabulary section on that slang is gone; the voice section stays. |

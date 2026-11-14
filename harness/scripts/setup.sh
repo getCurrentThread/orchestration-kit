@@ -40,14 +40,13 @@ fi
 # ============================================================================
 echo ""
 echo "==> 2/4 Multi-host router verify"
-CLAUDE_HASH=$(shasum CLAUDE.md | awk '{print $1}')
 DRIFT=()
 for f in AGENTS.md .cursorrules .windsurfrules; do
   if [ ! -e "$f" ]; then
     DRIFT+=("$f (missing)")
   else
-    H=$(shasum "$f" | awk '{print $1}')
-    [ "$H" != "$CLAUDE_HASH" ] && DRIFT+=("$f")
+    # cmp, not shasum: shasum is a perl script, which the bash of Git for Windows finds only as a login shell.
+    cmp -s CLAUDE.md "$f" || DRIFT+=("$f")
   fi
 done
 if [ ${#DRIFT[@]} -eq 0 ]; then

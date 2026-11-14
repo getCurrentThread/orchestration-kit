@@ -30,11 +30,21 @@ def tree(folder):
     return {path.relative_to(folder).as_posix(): path.read_bytes() for path in folder.rglob("*") if path.is_file()}
 
 
+# A PATH without the perl folders of Git for Windows, as on a GitHub runner. A bash that is no login shell then
+# finds what Git's own bin and usr/bin hold and no perl script such as shasum: all a harness script may need.
+BARE_PATH = os.pathsep.join(
+    entry for entry in os.environ["PATH"].split(os.pathsep) if not entry.rstrip("\\/").lower().endswith("_perl")
+)
+
+
 class HarnessTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temporary.cleanup)
         self.target = Path(temporary.name).resolve() / "repo"
+        bare = mock.patch.dict(os.environ, {"PATH": BARE_PATH})
+        bare.start()
+        self.addCleanup(bare.stop)
         # The tool check reports this machine, not the code under test.
         patcher = mock.patch.object(harness, "missing_tools", return_value=[])
         patcher.start()
