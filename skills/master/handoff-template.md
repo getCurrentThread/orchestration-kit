@@ -4,9 +4,6 @@
 
 ```
 Current Role: Maintenance
-Role Lock: DISABLED
-Frozen: none
-Unlock: none
 ```
 
 Current Role is one of: Architecture, Research, Reference Implementation, Feature Implementation,

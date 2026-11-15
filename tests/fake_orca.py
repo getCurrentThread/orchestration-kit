@@ -11,6 +11,22 @@ a healthy one (verdict live); `worker-show` of an id that never existed (ok fals
 prompt end the tail) and of a released terminal (status exited, empty tail); `terminal send` (`result.send.accepted`) and, to a
 closed terminal, ok false with error.code terminal_not_writable; `terminal wait --for tui-idle` (`result.wait.satisfied`) and, on
 timeout, ok false with error.code timeout; `orchestration send --to dispatch:<id>` (`result.messageId`).
+
+Switches that were NOT measured against Orca. Each makes the fake answer in a way a test needs and stands for a doubt the
+wrapper must survive, not for an answer Orca was seen to give:
+  FAKE_ORCA_START=exit 1             `worker-start` prints an ok-false answer and exits 1 before it starts anything: stands for
+                                     any refusal, with no worker.
+  FAKE_ORCA_START=no dispatchId      `worker-start` exits 0 with a receipt that lacks `dispatchId`, the worker started: stands for
+                                     a receipt of a shape this wrapper does not read.
+  FAKE_ORCA_START=effects without id `worker-start` exits 0 with an `effects` entry that has no `id`; "effects without kind"
+                                     the same with no `kind`; "no effects" without `effects`; "effects not a list" with a string
+                                     in its place: stand for a receipt of a shape this wrapper does not read.
+  FAKE_ORCA_DECOY=<model>            after the worker's session file, a newer one in the same folder on that model whose first
+                                     prompt does not name the dispatch: stands for a second worker there, or the reflector
+                                     session that the owner's autoharness starts when a session ends.
+  FAKE_ORCA_LAUNCH=no terminal       `agent launch` exits 0 and names no terminal (outcome kind `chat`).
+  FAKE_ORCA_LAUNCH=not delivered     `agent launch` names a terminal and gives the prompt another outcome (`rejected`): stand for
+                                     the two doubts the wrapper's launch check is written for.
 """
 
 import json
@@ -69,6 +85,9 @@ def rollout(name, cwd, model):
 
 
 if command == "orchestration worker-start":
+    if os.environ.get("FAKE_ORCA_START") == "exit 1":
+        print(json.dumps({"ok": False, "error": {"code": "runtime_error", "message": "worker-start refused"}}))
+        sys.exit(1)
     # A real worker session writes its transcript as soon as it answers.
     model = os.environ["FAKE_ORCA_WORKER_MODEL"]
     if option("--agent") == "codex":
@@ -86,6 +105,11 @@ if command == "orchestration worker-start":
         session = str(uuid.uuid4())
         Path(os.environ["FAKE_ORCA_LOG"] + ".session").write_text(session, encoding="utf-8")
         (transcripts / f"{session}.jsonl").write_text(json.dumps(prompt) + "\n" + json.dumps(entry) + "\n", encoding="utf-8")
+        if "FAKE_ORCA_DECOY" in os.environ:
+            time.sleep(0.05)  # born after the worker's file, so that it is the newest
+            other = {"type": "user", "isSidechain": False, "message": {"role": "user", "content": "A session that is not this worker's"}}
+            reply = {"type": "assistant", "isSidechain": False, "message": {"id": "msg_2", "model": os.environ["FAKE_ORCA_DECOY"], "usage": usage}}
+            (transcripts / f"{uuid.uuid4()}.jsonl").write_text(json.dumps(other) + "\n" + json.dumps(reply) + "\n", encoding="utf-8")
     name = os.environ.get("FAKE_ORCA_DISPATCH", "test")
     result = {
         "state": "ready",
@@ -94,6 +118,16 @@ if command == "orchestration worker-start":
         "dispatchId": f"ctx_{name}",
         "effects": [{"kind": "worktree", "action": "reused", "id": f"00000000::{folder}"}],
     }
+    if os.environ.get("FAKE_ORCA_START") == "no dispatchId":
+        del result["dispatchId"]
+    if os.environ.get("FAKE_ORCA_START") == "effects without id":
+        del result["effects"][0]["id"]
+    if os.environ.get("FAKE_ORCA_START") == "effects without kind":
+        del result["effects"][0]["kind"]
+    if os.environ.get("FAKE_ORCA_START") == "no effects":
+        del result["effects"]
+    if os.environ.get("FAKE_ORCA_START") == "effects not a list":
+        result["effects"] = "worktree"
 elif command == "orchestration worker-show":
     dispatch = option("--dispatch")
     outcome = os.environ.get("FAKE_ORCA_OUTCOME", "in_progress")
@@ -135,6 +169,10 @@ elif command == "agent launch":
         "worktreeId": f"00000000::{folder}",
         "prompt": {"delivery": "submit", "outcome": "handed-to-terminal"},
     }
+    if os.environ.get("FAKE_ORCA_LAUNCH") == "no terminal":
+        result["outcome"] = {"kind": "chat"}
+    if os.environ.get("FAKE_ORCA_LAUNCH") == "not delivered":
+        result["prompt"]["outcome"] = "rejected"
 elif arguments[0] == "open":
     result = {}  # the wrapper starts the app with it and reads nothing of what it prints
 elif command == "worktree current":

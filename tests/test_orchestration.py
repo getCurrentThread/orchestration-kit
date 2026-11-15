@@ -361,6 +361,60 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(self.worker_starts(), [])
         self.assertFalse(any(row.get("job_id") for row in self.ledger()))  # nothing was registered
 
+    def test_a_gate_answer_without_what_register_needs_refuses_before_a_worker_starts(self):
+        gate = orchestration.gate
+        cases = (
+            ("check", "contract_sha", "check", "CONTRACT_SHA_MISSING"),
+            ("budget", "tokens_basis", "budget", "BUDGET_FIELDS_MISSING"),
+            ("budget", "source", "budget", "BUDGET_FIELDS_MISSING"),
+            ("budget", "token_budget", "budget", "BUDGET_FIELDS_MISSING"),
+        )
+        for command, field, stage, reason in cases:
+            def without(*arguments, command=command, field=field):
+                code, decision = gate(*arguments)
+                if arguments[0] == command:
+                    decision.pop(field, None)
+                return code, decision
+
+            with self.subTest(field=field), mock.patch.object(orchestration, "gate", without):
+                code, output = self.dispatch()
+            self.assertEqual(code, 2, output)
+            line = json.loads(output.splitlines()[0])
+            self.assertEqual((line["stage"], line["allow"], line["reason"]), (stage, False, reason))
+            self.assertEqual(self.worker_starts(), [])  # refused with nothing started, not by an error after the start
+            self.assertFalse(any(row.get("job_id") for row in self.ledger()))
+
+    def test_a_worker_start_that_orca_refuses_registers_nothing(self):
+        os.environ["FAKE_ORCA_START"] = "exit 1"
+        code, output = self.dispatch()
+        self.assertEqual(code, 2, output)
+        self.assertIn("worker-start refused", output)  # Orca's own answer is printed
+        self.assertIn("worker-start failed; load Orca's recovery guide before retrying", output)
+        self.assertFalse(any(row.get("job_id") for row in self.ledger()))
+
+    def test_a_start_that_orca_calls_done_without_a_dispatch_id_is_no_failure_and_registers_nothing(self):
+        os.environ["FAKE_ORCA_START"] = "no dispatchId"
+        code, output = self.dispatch()
+        self.assertEqual(code, 2, output)
+        self.assertIn('"taskId": "task_test"', output)  # Orca's answer is printed
+        message = next(line for line in output.splitlines() if line.startswith("orchestration:"))
+        self.assertNotIn("failed", message)  # a worker was started
+        for said in ("Orca reported the start as done", "may be running which no ledger row holds", "orca orchestration run-current --json",
+                     "orca orchestration worker-list --run <run>", "Do not dispatch this contract again before that worker is found"):
+            self.assertIn(said, message)
+        self.assertFalse(any(row.get("job_id") for row in self.ledger()))
+        self.assertEqual(len(self.worker_starts()), 1)
+
+    def test_a_receipt_whose_effects_cannot_be_read_gives_no_workspace_and_the_worker_is_registered(self):
+        for number, shape in enumerate(("effects without id", "effects without kind", "no effects", "effects not a list")):
+            name = shape.replace(" ", "_")
+            with self.subTest(shape=shape), mock.patch.dict(os.environ, {"FAKE_ORCA_START": shape, "FAKE_ORCA_DISPATCH": name}):
+                code, output = self.dispatch(front=f"budget: [tokens={1000 + number}]\n")  # a contract of its own
+                self.assertEqual(code, 0, output)
+                line = json.loads(output)
+                self.assertEqual((line["dispatch"], line["workspace"]), (f"ctx_{name}", ""))
+                self.assertIn(f"ctx_{name}", [row.get("job_id") for row in self.ledger()])
+
     def test_a_dispatch_that_orca_does_not_know_is_settled_once_as_unmeasured(self):
         self.assertEqual(self.dispatch(front="budget: [tokens=2000]\n")[0], 0)
         os.environ["FAKE_ORCA_OUTCOME"] = "unknown dispatch"  # a ledger older than an `orca orchestration reset`
@@ -515,11 +569,24 @@ class OrchestrationTest(unittest.TestCase):
         frames = [{"runtime": "one", "workers": {}, "release": ["ctx_gated"], "unread": 0}]
         self.assertNotIn("did not pass the gate", self.watch(frames))  # no ledger here, so nothing to compare with
         ledger = self.work / ".orchestration" / "dispatch-ledger.jsonl"
-        ledger.write_text(json.dumps({"job_id": "ctx_gated"}) + "\nnot json\n", encoding="utf-8")
+        ledger.write_text(json.dumps({"job_id": "ctx_gated", "decision": "ALLOW"}) + "\nnot json\n", encoding="utf-8")
         output = self.watch(frames)
         # What a `send` to a settled dispatch starts: a worker in the Run that the ledger has never seen.
-        self.assertIn("dispatch ctx_settled of run_test is not in this workspace's ledger, so it did not pass the gate", output)
-        self.assertNotIn("dispatch ctx_gated of run_test is not in", output)
+        self.assertIn("dispatch ctx_settled of run_test is not registered in this workspace's ledger, so it did not pass the gate", output)
+        self.assertNotIn("dispatch ctx_gated of run_test is not registered", output)
+
+    def test_watch_takes_a_denied_register_for_a_dispatch_that_did_not_pass_the_gate(self):
+        # The gate writes a DENY row with a job_id when it refuses a register (MODEL_TIER_ESCALATION): the worker runs all the same.
+        frames = [{"runtime": "one", "workers": {}, "release": ["ctx_allowed", "ctx_denied"], "unread": 0}]
+        ledger = self.work / ".orchestration" / "dispatch-ledger.jsonl"
+        ledger.parent.mkdir()
+        rows = ({"job_id": "ctx_allowed", "decision": "ALLOW"}, {"job_id": "ctx_denied", "decision": "DENY", "reason": "MODEL_TIER_ESCALATION"})
+        ledger.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        output = self.watch(frames)
+        self.assertIn("dispatch ctx_denied of run_test is not registered in this workspace's ledger", output)
+        self.assertNotIn("dispatch ctx_allowed of run_test is not registered", output)
+        ledger.write_text(json.dumps(rows[1]) + "\n", encoding="utf-8")  # a workspace whose only dispatch was denied is still one that dispatched
+        self.assertIn("dispatch ctx_denied of run_test is not registered in this workspace's ledger", self.watch(frames))
 
     def test_watch_gives_up_on_what_waiting_cannot_mend(self):
         output = self.watch([
@@ -654,7 +721,7 @@ class OrchestrationTest(unittest.TestCase):
 
     def test_succeed_keeps_the_owners_default_model_unless_one_is_named(self):
         handoff = self.work / "handoff.md"
-        state = "## Role State\n\nCurrent Role: Maintenance\nRole Lock: DISABLED\nFrozen: none\nUnlock: none\n\n"
+        state = "## Role State\n\nCurrent Role: Maintenance\n\n"
         handoff.write_text(state + "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:]), encoding="utf-8")
         code, output = self.cli("succeed", "--handoff", str(handoff))
         self.assertEqual(code, 0, output)
@@ -673,12 +740,72 @@ class OrchestrationTest(unittest.TestCase):
             self.assertIn(says, output)
         self.assertEqual(len(self.orca_calls()), before)
 
+    def test_succeed_exits_0_only_when_orca_names_a_terminal_and_the_kickoff_reached_it(self):
+        handoff = self.work / "handoff.md"
+        state = "## Role State\n\nCurrent Role: Maintenance\n\n"
+        handoff.write_text(state + "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:]), encoding="utf-8")
+        refusals = (
+            ("no terminal", ("named no terminal with a successor", "a second run would start a second successor", f"orca terminal list --worktree path:{self.work} --json")),
+            ("not delivered", ("terminal term_launched", "(prompt outcome: 'rejected')", "orca terminal read --terminal term_launched --screen", "Do not run this again")),
+        )
+        for launch, said in refusals:
+            with self.subTest(launch=launch), mock.patch.dict(os.environ, {"FAKE_ORCA_LAUNCH": launch}):
+                code, output = self.cli("succeed", "--handoff", str(handoff))
+            self.assertEqual(code, 2, output)
+            for part in said:
+                self.assertIn(part, output)
+        code, output = self.cli("succeed", "--handoff", str(handoff))
+        self.assertEqual(code, 0, output)
+        line = json.loads(output)  # one line, and not Orca's raw answer
+        self.assertEqual({name: line[name] for name in ("stage", "allow", "terminal")}, {"stage": "succeed", "allow": True, "terminal": "term_launched"})
+        for step in ("stop your watch", "Tell the owner", "Then stop working"):
+            self.assertIn(step, line["next"])
+        launch = self.orca_calls()[-1]
+        self.assertNotIn("--focus", launch)  # `--focus` stays with `start`
+
+    def test_a_handoff_asks_of_the_role_state_a_current_role_and_no_more(self):
+        filled = "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:])
+        current = "## Role State\n\n```\nCurrent Role: Maintenance\n```\n\n"
+        old = "## Role State\n\n```\nCurrent Role: Maintenance\nRole Lock: DISABLED\nFrozen: none\nUnlock: none\n```\n\n"
+        for state in (current, old):  # a handoff written before the three lines were dropped is accepted
+            self.assertEqual(orchestration.handoff_problems(state + filled), [])
+        self.assertEqual(len(orchestration.handoff_problems(current.replace("Maintenance", "Boss") + filled)), 1)
+        template = orchestration.HANDOFF_TEMPLATE.read_text(encoding="utf-8")
+        for dropped in ("Role Lock", "Frozen", "Unlock"):
+            self.assertNotIn(dropped, template)
+        self.assertIn("Current Role: Maintenance", template)
+        self.assertFalse([problem for problem in orchestration.handoff_problems(template) if "Role State" in problem])
+
+    def test_the_contract_template_declares_no_budget_and_the_gate_takes_it_so(self):
+        template = (ROOT / "skills" / "master" / "contract-template.md").read_text(encoding="utf-8")
+        front = template.split("---\n")[1]
+        self.assertNotIn("budget", front)
+        self.assertIn("only tokens=N is measured", template)
+        code, output = self.cli("dispatch", "--contract", self.contract(), "--agent", "claude", "--model", EFFICIENT, "--effort", "low")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(json.loads(output)["token_budget"], None)
+
+    def test_the_model_probe_reads_the_session_that_names_the_dispatch(self):
+        # A newer session in the worker's folder, on a model of the top tier, whose first prompt names no dispatch:
+        # a second worker there, or the reflector that the owner's autoharness starts when a session ends.
+        os.environ["FAKE_ORCA_DECOY"] = versioned(TOP)
+        code, output = self.dispatch()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(list(self.transcripts().glob("*.jsonl"))), 2)  # the decoy is there, and newer
+        self.assertNotIn("MODEL_", output)  # neither MODEL_TIER_ESCALATION nor a warning
+        row = self.ledger()[1]
+        self.assertEqual((row["model_measured"], row["model_verified"]), (EFFICIENT, True))
+        # A session that does not name the dispatch is never read: with no other, the probe waits out its time and exits 1.
+        with mock.patch.object(orchestration.time, "monotonic", side_effect=[0, 0, 100]), mock.patch.object(orchestration.time, "sleep"):
+            code, output = self.cli("probe-model", "claude", self.work.as_posix(), "0", "ctx_other")
+        self.assertEqual((code, output), (1, ""))
+
     def test_succeed_needs_every_handoff_section_before_launching(self):
         handoff = self.work / "handoff.md"
         launch = ["succeed", "--handoff", str(handoff), "--model", EFFICIENT, "--effort", "high"]
         template = orchestration.HANDOFF_TEMPLATE.read_text(encoding="utf-8")
         filled = "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:])
-        state = "## Role State\n\nCurrent Role: Maintenance\nRole Lock: DISABLED\nFrozen: none\nUnlock: none\n\n"
+        state = "## Role State\n\nCurrent Role: Maintenance\n\n"
         for unusable, says in (
             ("## Role State\n", "`## Observed Baseline` is missing"),
             (template, "`## Current Objective` still holds the template's text"),  # saved without being filled in

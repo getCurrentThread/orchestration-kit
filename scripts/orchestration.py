@@ -183,7 +183,10 @@ def gate(*arguments: str) -> tuple[int, dict]:
     """Run the vendored dispatch gate and return its exit code and its one-line JSON decision."""
     result = gate_run(*arguments)
     try:
-        return result.returncode, json.loads(result.stdout.strip().splitlines()[-1])
+        decision = json.loads(result.stdout.strip().splitlines()[-1])
+        if not isinstance(decision, dict):
+            raise ValueError("not an object")
+        return result.returncode, decision
     except (IndexError, ValueError):
         unreadable = {"allow": False, "reason": "GATE_OUTPUT_UNREADABLE", "message": result.stderr.strip()[-500:]}
         return result.returncode or 1, unreadable
@@ -585,10 +588,20 @@ def dispatch(args: argparse.Namespace) -> int:
     if not isinstance(decision.get("front_matter"), dict):
         print(json.dumps({"stage": "check", **decision, "allow": False, "reason": "FRONT_MATTER_MISSING"}))
         return fail("the gate's check answered without a `front_matter` object, so no budget can be resolved. Nothing was started")
+    if not isinstance(decision.get("contract_sha"), str):
+        print(json.dumps({"stage": "check", **decision, "allow": False, "reason": "CONTRACT_SHA_MISSING"}))
+        return fail("the gate's check answered without a `contract_sha`, so the dispatch cannot be registered. Nothing was started")
     code, budget = gate("budget", "--front-matter", json.dumps(decision["front_matter"]))
     if code != 0:
         print(json.dumps({"stage": "budget", **budget}))
         return 2
+    # Read here, not after the start: an answer without one of these must refuse with no worker running.
+    if not all(isinstance(budget.get(name), str) for name in ("tokens_basis", "source")) or "token_budget" not in budget:
+        print(json.dumps({"stage": "budget", **budget, "allow": False, "reason": "BUDGET_FIELDS_MISSING"}))
+        return fail("the gate's budget answered without `tokens_basis`, `source` or `token_budget`, so the dispatch cannot be registered. Nothing was started")
+    contract_sha, tokens_basis, budget_source, token_budget = (
+        decision["contract_sha"], budget["tokens_basis"], budget["source"], budget["token_budget"],
+    )
     # The session-start hook reads this after a compaction, to remind the master and no other session here.
     # Written before the worker exists: a write that fails must not leave a running worker without its line.
     (state_dir() / "master").write_text(handle, encoding="utf-8")
@@ -600,41 +613,53 @@ def dispatch(args: argparse.Namespace) -> int:
         "--task-title", contract_title(contract), "--agent", args.agent, "--model", model, "--effort", args.effort,
         *place, "--json", "--full",
     ])
-    try:
-        receipt = json.loads(start.stdout)["result"]
-        dispatch_id, task_id = receipt["dispatchId"], receipt["taskId"]
-    except (ValueError, KeyError, TypeError):
-        receipt = None
-    if start.returncode != 0 or receipt is None:
+    if start.returncode != 0:
         # Never retried here: Orca's recovery guide says to read failedStage before any retry.
         print(start.stdout or start.stderr)
         return fail("worker-start failed; load Orca's recovery guide before retrying")
+    # From here on a worker runs: nothing below may raise on the shape of Orca's receipt.
+    try:
+        receipt = pluck(json.loads(start.stdout), "result")
+    except ValueError:
+        receipt = None
+    dispatch_id, task_id = pluck(receipt, "dispatchId"), pluck(receipt, "taskId")
+    if not all(isinstance(value, str) and value for value in (dispatch_id, task_id)):
+        print(start.stdout or start.stderr)
+        return fail(
+            "Orca reported the start as done, but its answer holds no `dispatchId` and `taskId`, so a worker may be "
+            "running which no ledger row holds. Find it with `orca orchestration run-current --json`, then "
+            "`orca orchestration worker-list --run <run>`. Do not dispatch this contract again before that worker is found"
+        )
 
     # Orca names a workspace "<id>::<folder>".
+    effects = receipt.get("effects")
     folder = next(
-        (effect["id"].split("::", 1)[-1] for effect in receipt.get("effects", []) if effect.get("kind") == "worktree"),
+        (
+            effect["id"].split("::", 1)[-1] for effect in (effects if isinstance(effects, list) else [])
+            if isinstance(effect, dict) and effect.get("kind") == "worktree" and isinstance(effect.get("id"), str)
+        ),
         "",
     )
     register = [
-        "register", "--job-id", dispatch_id, "--contract-sha", decision["contract_sha"],
+        "register", "--job-id", dispatch_id, "--contract-sha", contract_sha,
         "--runtime", args.agent, "--tier-policy", str(POLICY), "--orchestration-task", task_id,
-        "--declared-model", entry, "--tokens-basis", budget["tokens_basis"], "--token-budget-source", budget["source"],
+        "--declared-model", entry, "--tokens-basis", tokens_basis, "--token-budget-source", budget_source,
         # The gate's `card` column: the task this dispatch is an attempt at. Its own `attempt` counts one contract file.
         "--card", str(origin or task_id),
         "--probe-cmd",
         subprocess.list2cmdline([orca(), "orchestration", "worker-show", "--dispatch", dispatch_id, "--json"]),
     ]
-    if budget["token_budget"] is not None:
-        register += ["--token-budget", str(budget["token_budget"])]
+    if token_budget is not None:
+        register += ["--token-budget", str(token_budget)]
     if folder:
-        probe = [*PYTHON, str(Path(__file__).resolve()), "probe-model", args.agent, folder, str(started_at)]
+        probe = [*PYTHON, str(Path(__file__).resolve()), "probe-model", args.agent, folder, str(started_at), dispatch_id]
         register += ["--model-probe-cmd", subprocess.list2cmdline(probe)]
     code, registered = gate(*register)
     # `workspace` is the folder the worker runs in: a worktree of its own holds the branch to review.
     started = {
         "stage": "register", "dispatch": dispatch_id, "task": task_id, "run": receipt.get("runId"), "model": model,
         "workspace": folder, "origin": origin or task_id, "task_attempt": len(tried) + 1,
-        "token_budget": budget["token_budget"], "tokens_basis": budget["tokens_basis"],
+        "token_budget": token_budget, "tokens_basis": tokens_basis,
     }
     if code != 0:
         print(json.dumps({**started, **registered}))
@@ -870,11 +895,13 @@ def watch(args: argparse.Namespace) -> int:
                 steps += [kept for kept in (kept_open(worker) for worker in listed_workers if not next_step(worker)) if kept]
                 # Orca answers a `send` to a settled dispatch by starting a new worker, which no gate has checked.
                 # Only where this workspace has dispatched: a watch elsewhere has no ledger to compare with.
-                gated = {row.get("job_id") for row in ledger_rows()} - {None}
+                # A DENY row has a job_id too (a register the gate refused): only ALLOW is passing, as in `attempts`.
+                rows = [row for row in ledger_rows() if row.get("job_id")]
+                gated = {row["job_id"] for row in rows if row.get("decision") == "ALLOW"}
                 steps += [
-                    f"watch: dispatch {worker['dispatchId']} of {args.run} is not in this workspace's ledger, so it did "
-                    "not pass the gate. A `send` to a settled dispatch starts such a worker. Name it in your report."
-                    for worker in listed_workers if gated and worker["dispatchId"] not in gated
+                    f"watch: dispatch {worker['dispatchId']} of {args.run} is not registered in this workspace's ledger, so "
+                    "it did not pass the gate. A `send` to a settled dispatch starts such a worker. Name it in your report."
+                    for worker in listed_workers if rows and worker["dispatchId"] not in gated
                 ]
                 wake.append(
                     f"watch: every dispatch of {args.run} has settled and its mail is read."
@@ -967,12 +994,21 @@ def sessions_naming(agent: str, folder: str, since: float, dispatch_id: str, ski
 
 
 def probe_model(args: argparse.Namespace) -> int:
-    """Print the model family of the newest session an agent started in a folder since a given time."""
+    """Print the model family of the newest session an agent started in a folder since a given time.
+
+    A Claude session counts only if its first prompts name the dispatch, as `settle` finds it: a second worker in
+    the folder, or the reflector session that the owner's autoharness starts when a worker's session ends, is no
+    answer for this one.
+    """
     deadline = time.monotonic() + 25  # the gate kills this probe after 30 seconds
     while time.monotonic() < deadline:
-        # shortcut: takes the newest session born after the dispatch; another session started in the same folder
-        # in that window could be read instead. Switch to the session id once Orca reports it in the receipt.
-        for session in sessions_born(args.agent, args.folder, args.since - 2)[:1]:
+        # shortcut: Codex takes the newest rollout of the folder born after the dispatch; another one started there
+        # in that window could be read instead. Name the dispatch once a Codex rollout carries it.
+        born = (
+            sessions_born(args.agent, args.folder, args.since - 2) if args.agent == "codex"
+            else sessions_naming(args.agent, args.folder, args.since - 2, args.dispatch, [])
+        )
+        for session in born[:1]:
             model = session_model(args.agent, session)
             if model:
                 # The session holds a versioned id; the gate compares families. An id outside the policy stays as it is.
@@ -1011,13 +1047,10 @@ def handoff_problems(document: str) -> list[str]:
             problems.append(f"`## {heading}` is empty; write `none` where there is nothing to hand over")
         elif heading != "Role State" and written[heading] == template.get(heading):
             problems.append(f"`## {heading}` still holds the template's text")
-    state = dict(re.findall(r"(?m)^(Current Role|Role Lock|Frozen|Unlock): *(\S.*?) *$", written.get("Role State", "")))
     if "Role State" in written:
-        if state.get("Current Role") not in ROLES:
+        role = re.search(r"(?m)^Current Role: *(\S.*?) *$", written["Role State"])
+        if not role or role.group(1) not in ROLES:
             problems.append("Role State: `Current Role` must be one of " + ", ".join(ROLES))
-        if state.get("Role Lock") not in ("ENABLED", "DISABLED"):
-            problems.append("Role State: `Role Lock` must be ENABLED or DISABLED")
-        problems += [f"Role State: `{name}` is missing; write `none`" for name in ("Frozen", "Unlock") if name not in state]
     return problems
 
 
@@ -1030,6 +1063,35 @@ def workspace_known() -> bool:
         print(json.dumps(known, ensure_ascii=False))
         return known["allow"]
     return True
+
+
+def launched(launch: subprocess.CompletedProcess, who: str) -> str:
+    """Return the terminal an `orca agent launch` named, or raise Refused unless its prompt reached that terminal.
+
+    `start` and `succeed` both launch a fresh agent in a terminal and are told to stop afterwards, so both stop on
+    the same proof. A second run after either doubt would start a second `who`.
+    """
+    try:
+        result = json.loads(launch.stdout)["result"]
+        terminal = result["outcome"]["handle"] if result["outcome"]["kind"] == "terminal" else None
+        delivered = result["prompt"]["outcome"]
+    except (ValueError, KeyError, TypeError):
+        terminal = delivered = None
+    if launch.returncode != 0 or not isinstance(terminal, str):
+        print(launch.stdout or launch.stderr)
+        raise Refused(
+            "NO_TERMINAL",
+            f"orca agent launch named no terminal with a {who} in it. Look before you run this again, because a second "
+            f"run would start a second {who}: `orca terminal list --worktree path:{Path.cwd()} --json`",
+        )
+    if delivered not in ("journaled", "handed-to-terminal"):  # what Orca's guide calls a delivered brief
+        raise Refused(
+            "NOT_DELIVERED",
+            f"Orca started terminal {terminal} and does not say that the kickoff reached it (prompt outcome: "
+            f"{delivered!r}). Read its screen with `orca terminal read --terminal {terminal} --screen`, and tell the "
+            "owner what it shows. Do not run this again: the agent is there",
+        )
+    return terminal
 
 
 def start(args: argparse.Namespace) -> int:
@@ -1089,24 +1151,10 @@ def start(args: argparse.Namespace) -> int:
         orca(), "agent", "launch", "--agent", "claude", "--surface", "terminal", "--focus", "--prompt", kickoff, "--json",
     ])
     try:
-        result = json.loads(launch.stdout)["result"]
-        terminal = result["outcome"]["handle"] if result["outcome"]["kind"] == "terminal" else None
-        delivered = result["prompt"]["outcome"]
-    except (ValueError, KeyError, TypeError):
-        terminal = delivered = None
+        terminal = launched(launch, "master")
+    except Refused as refusal:
+        return fail(str(refusal))
     here = Path.cwd()
-    if launch.returncode != 0 or not isinstance(terminal, str):
-        print(launch.stdout or launch.stderr)
-        return fail(
-            "orca agent launch named no terminal with a master in it. Look before you run this again, because a second "
-            f"run would start a second master: `orca terminal list --worktree path:{here} --json`"
-        )
-    if delivered not in ("journaled", "handed-to-terminal"):  # what Orca's guide calls a delivered brief
-        return fail(
-            f"Orca started terminal {terminal} and does not say that the kickoff reached it (prompt outcome: "
-            f"{delivered!r}). Read its screen with `orca terminal read --terminal {terminal} --screen`, and tell the "
-            "owner what it shows. Do not run this again: the agent is there"
-        )
     step = (
         "tell the owner that the master now runs in Orca, in the tab that is in front there, and that it takes the "
         "first task there. Then stop: this session is not the master, and dispatches nothing"
@@ -1150,8 +1198,16 @@ def succeed(args: argparse.Namespace) -> int:
         # A master dispatches from a terminal's handle. Without this, the owner's Chat | CLI setting decides.
         "--surface", "terminal", "--prompt", kickoff, "--json",
     ])
-    print(launch.stdout or launch.stderr)
-    return 0 if launch.returncode == 0 else fail("orca agent launch failed")
+    try:
+        terminal = launched(launch, "successor")
+    except Refused as refusal:
+        return fail(str(refusal))
+    step = (
+        "stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner that the "
+        f"successor now runs in Orca, in terminal {terminal}. Then stop working"
+    )
+    print(json.dumps({"stage": "succeed", "allow": True, "terminal": terminal, "next": step}, ensure_ascii=False))
+    return 0
 
 
 def retirement(predecessor: str) -> str:
@@ -1610,6 +1666,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument("agent", choices=("claude", "codex"))
     sub.add_argument("folder")
     sub.add_argument("since", type=float)
+    sub.add_argument("dispatch", help="the dispatch whose session is read (Claude only; a Codex rollout does not carry it)")
     sub.set_defaults(handler=probe_model)
 
     commands.add_parser("compacted").set_defaults(handler=compacted)  # internal: the plugin's session-start hook
