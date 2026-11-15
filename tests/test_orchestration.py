@@ -111,6 +111,10 @@ class OrchestrationTest(unittest.TestCase):
     def worker_starts(self):
         return [call for call in self.orca_calls() if call[:2] == ["orchestration", "worker-start"]]
 
+    def sends(self):
+        """The calls that reach a worker: text typed into a terminal, a wait on it, and mail to a dispatch."""
+        return [call for call in self.orca_calls() if call[:2] in (["terminal", "send"], ["terminal", "wait"], ["orchestration", "send"])]
+
     def ledger(self):
         path = self.work / ".orchestration" / "dispatch-ledger.jsonl"
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
@@ -291,6 +295,65 @@ class OrchestrationTest(unittest.TestCase):
             self.assertIn("usage unsettled", output)
             self.assertNotIn("token_usage", self.ledger()[1])
 
+    def test_report_says_when_the_orca_cli_cannot_be_started(self):
+        self.assertEqual(self.dispatch()[0], 0)
+        os.environ["ORCA_CLI_COMMAND"] = str(self.work / "no-such-orca.cmd")
+        output = self.cli("report")[1]
+        self.assertIn("ctx_test: not settled, the Orca CLI", output)
+        self.assertIn("cannot be run", output)
+        self.assertNotIn("is missing or refused", output)
+
+    def test_report_skips_a_session_file_it_cannot_read_and_names_it(self):
+        self.assertEqual(self.dispatch(front="budget: [tokens=2000]\n")[0], 0)
+        for name in ("locked.jsonl", "gone.jsonl"):
+            (self.transcripts() / name).write_text("{}\n", encoding="utf-8")
+        names, stat = orchestration.names_dispatch, Path.stat
+
+        def locked(session, dispatch_id):
+            if session.name == "locked.jsonl":
+                raise PermissionError(13, "Permission denied")
+            return names(session, dispatch_id)
+
+        def vanishing(path, **options):  # a file that is listed and then gone
+            if path.name == "gone.jsonl":
+                raise FileNotFoundError(2, "No such file or directory")
+            return stat(path, **options)
+
+        os.environ["FAKE_ORCA_OUTCOME"] = "succeeded"
+        with mock.patch.object(orchestration, "names_dispatch", locked), mock.patch.object(Path, "stat", vanishing):
+            output = self.cli("report")[1]
+        self.assertIn("ctx_test: session file locked.jsonl: Permission denied skipped, it could not be read", output)
+        self.assertIn("ctx_test: session file gone.jsonl: No such file or directory skipped, it could not be read", output)
+        self.assertEqual(self.token_lines(output), ["  ctx_test: budget 2000 total, usage 2200 total over"])  # the worker's own file is measured
+
+    def test_a_check_answer_without_front_matter_refuses_before_a_worker_starts(self):
+        gate = orchestration.gate
+
+        def without(*arguments):
+            code, decision = gate(*arguments)
+            if arguments[0] == "check":
+                decision.pop("front_matter", None)
+            return code, decision
+
+        with mock.patch.object(orchestration, "gate", without):
+            code, output = self.dispatch()
+        self.assertEqual(code, 2, output)
+        self.assertIn("FRONT_MATTER_MISSING", output)
+        self.assertEqual(self.worker_starts(), [])
+        self.assertFalse(any(row.get("job_id") for row in self.ledger()))  # nothing was registered
+
+    def test_a_dispatch_that_orca_does_not_know_is_settled_once_as_unmeasured(self):
+        self.assertEqual(self.dispatch(front="budget: [tokens=2000]\n")[0], 0)
+        os.environ["FAKE_ORCA_OUTCOME"] = "unknown dispatch"  # a ledger older than an `orca orchestration reset`
+        output = self.cli("report")[1]
+        self.assertIn("ctx_test: Orca does not know this dispatch (dispatch_not_found)", output)
+        self.assertEqual(self.ledger()[1]["token_usage"]["source"], "unmeasured")
+        self.assertEqual(self.ledger()[1]["token_usage"]["why"].split(":")[0], "claude")  # the runtime the ledger holds
+        self.assertIn("usage unmeasured", output)
+        shown = len([call for call in self.orca_calls() if call[:2] == ["orchestration", "worker-show"]])
+        self.assertNotIn("does not know", self.cli("report")[1])  # not printed for ever
+        self.assertEqual(len([call for call in self.orca_calls() if call[:2] == ["orchestration", "worker-show"]]), shown)
+
     def test_a_new_worktree_in_the_masters_own_repository_starts_from_its_local_branch(self):
         self.git(self.work, "init", "-q")
         self.git(self.work, "commit", "-q", "--allow-empty", "-m", "a commit the remote does not have")
@@ -444,6 +507,115 @@ class OrchestrationTest(unittest.TestCase):
             output = self.watch([{"runtime": "one", "unread": 0, **unusable}], ends=2)
             self.assertIn(says, output)
             self.assertNotIn("has settled", output)
+
+    def resume(self, dispatch_id="ctx_test"):
+        return self.cli("resume", "--dispatch", dispatch_id)
+
+    def session_id(self):
+        return Path(str(self.log) + ".session").read_text(encoding="utf-8")
+
+    def test_resume_brings_an_ended_session_back_in_its_own_terminal_and_tells_it_to_go_on(self):
+        self.assertEqual(self.dispatch()[0], 0)
+        before = self.ledger()
+        os.environ["FAKE_ORCA_LIVENESS"] = "unverifiable"  # an agent that ended: Orca has no status of it
+        code, output = self.resume()
+        self.assertEqual(code, 0, output)
+        line = json.loads(output)
+        session = self.session_id()
+        self.assertEqual(
+            {name: line[name] for name in ("stage", "allow", "dispatch", "terminal", "session", "run")},
+            {"stage": "resume", "allow": True, "dispatch": "ctx_test", "terminal": "term_worker_ctx_test", "session": session, "run": "run_test"},
+        )
+        self.assertIn("watch --run run_test", line["next"])
+        self.assertIn("end your turn", line["next"])
+        typed, waited, mail, notice = sends = self.sends()
+        self.assertEqual([call[:2] for call in sends], [["terminal", "send"], ["terminal", "wait"], ["orchestration", "send"], ["terminal", "send"]])
+        # Claude's own line, as printed, into the worker's own terminal: its handle, flags and folder are the worker's.
+        self.assertEqual(typed[typed.index("--terminal") + 1], "term_worker_ctx_test")
+        self.assertEqual(typed[typed.index("--text") + 1], f"claude --dangerously-skip-permissions --model claude-haiku-5-5 --effort low --resume {session}")
+        self.assertIn("--enter", typed)
+        self.assertEqual(waited[waited.index("--for") + 1], "tui-idle")  # the message and the notice wait for the session
+        self.assertEqual(mail[mail.index("--to") + 1], "dispatch:ctx_test")
+        self.assertEqual(mail[mail.index("--from") + 1], "term_test")
+        body = mail[mail.index("--body") + 1]
+        for said in ("ended and was started again", "without redoing what is done", "Finish command of your preamble"):
+            self.assertIn(said, body)
+        self.assertEqual(notice[notice.index("--text") + 1], "You have 1 orchestration message. Run orca orchestration check.")
+        self.assertEqual(notice[notice.index("--terminal") + 1], "term_worker_ctx_test")
+        self.assertEqual(self.ledger(), before)  # no dispatch, nothing written
+        self.assertEqual(len(self.worker_starts()), 1)
+
+    def test_resume_refuses_what_is_not_proven_ended_and_starts_nothing(self):
+        self.assertEqual(self.dispatch()[0], 0)
+        before, calls = self.ledger(), len(self.orca_calls())
+        line = "claude --dangerously-skip-permissions --model claude-haiku-5-5 --effort low --resume"
+        screen = ["❯ Cooked for 8s", "──────────", "  ⏵⏵ bypass permissions on (shift+tab to cycle)"]  # an agent that runs
+        other = "00000000-0000-4000-8000-000000000000"
+        reflector = {"type": "user", "message": {"role": "user", "content": "# Episode window (redacted) " + "x" * 20000 + " ctx_test"}}
+        (self.transcripts() / f"{other}.jsonl").write_text(json.dumps(reflector) + "\n", encoding="utf-8")
+        cases = (
+            ("AGENT_LIVE", {"FAKE_ORCA_LIVENESS": "live"}, "orca orchestration send --to dispatch:ctx_test"),
+            ("SUCCEEDED", {"FAKE_ORCA_OUTCOME": "succeeded"}, "nothing to resume"),
+            ("FAILED", {"FAKE_ORCA_OUTCOME": "failed"}, "--follows ctx_test"),
+            ("OUTCOME_UNKNOWN", {"FAKE_ORCA_OUTCOME": "paused"}, "which this command does not know"),
+            ("ORCA_SILENT", {"FAKE_ORCA_OUTCOME": "no answer"}, "orca status"),
+            ("ORCA_REFUSED", {"FAKE_ORCA_OUTCOME": "unknown dispatch"}, "dispatch line"),
+            ("ORCA_SHAPE", {"FAKE_ORCA_WITHOUT": "worker.agentTerminalHandle"}, "lacks `worker.agentTerminalHandle`"),
+            ("ORCA_SHAPE", {"FAKE_ORCA_WITHOUT": "projection.liveness"}, "lacks `projection.liveness.verdict`"),
+            ("ORCA_SHAPE", {"FAKE_ORCA_WITHOUT": "dispatch.runId"}, "lacks `dispatch.runId`"),
+            ("NOT_CLAUDE", {"FAKE_ORCA_AGENT": "codex"}, "Claude sessions only"),
+            ("AGENT_NOT_PROVEN_ENDED", {"FAKE_ORCA_TAIL": json.dumps(screen)}, "orca terminal read --terminal term_worker_ctx_test --screen"),
+            ("AGENT_NOT_PROVEN_ENDED", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", f"{line} {{session}}"])}, "may still run"),  # no prompt yet
+            ("AGENT_NOT_PROVEN_ENDED", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", f"{line} {{session}}", "PS C:/work>", "PS C:/work> dir"])}, "may still run"),
+            ("AGENT_NOT_PROVEN_ENDED", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", f"{line} {{session}} & calc", "PS C:/work>"])}, "may still run"),  # shell syntax
+            ("AGENT_NOT_PROVEN_ENDED", {"FAKE_ORCA_TAIL": json.dumps([])}, "A terminal that is gone"),  # a released terminal reads as empty
+            ("SESSION_MISMATCH", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", f"{line} {other}", "PS C:/work>"])}, "not the session file of ctx_test"),  # the reflector's
+            ("SESSION_MISMATCH", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", f"{line} 11111111-1111-4111-8111-111111111111", "PS C:/work>"])}, "not the session file of ctx_test"),
+        )
+        for reason, environment, says in cases:
+            with self.subTest(reason=reason, environment=environment), mock.patch.dict(os.environ, {"FAKE_ORCA_LIVENESS": "unverifiable", **environment}):
+                code, output = self.resume()
+                self.assertEqual(code, 2, output)
+                self.assertEqual(json.loads(output.splitlines()[0]), {"stage": "resume", "allow": False, "dispatch": "ctx_test", "reason": reason})
+                self.assertIn(says, output)
+        self.assertEqual(self.sends(), [])  # not a character reached a terminal, and no mail was queued
+        self.assertEqual(self.ledger(), before)
+        self.assertEqual(len(self.worker_starts()), 1)
+        self.assertGreater(len(self.orca_calls()), calls)  # Orca was asked, and the cases above did not need more than reads
+        # The session file of the dispatch is gone: the line names a session that nothing here can show to be the worker's.
+        for path in self.transcripts().glob("*.jsonl"):
+            if path.stem != other:
+                path.unlink()
+        with mock.patch.dict(os.environ, {"FAKE_ORCA_LIVENESS": "unverifiable"}):
+            self.assertEqual(self.resume()[0], 2)
+        self.assertEqual(self.sends(), [])
+
+    def test_resume_needs_a_dispatch_that_this_workspaces_ledger_holds(self):
+        code, output = self.resume()  # a folder that dispatched nothing
+        self.assertEqual(code, 2)
+        self.assertIn("NOT_REGISTERED", output)
+        self.assertIn("workspace root", output)
+        self.assertEqual(self.orca_calls(), [])
+        self.assertFalse((self.work / ".orchestration").exists())
+        self.assertEqual(self.dispatch()[0], 0)
+        calls = len(self.orca_calls())
+        code, output = self.resume("ctx_elsewhere")
+        self.assertEqual(code, 2)
+        self.assertIn("NOT_REGISTERED", output)
+        self.assertEqual(len(self.orca_calls()), calls)  # Orca was not asked about it
+        del os.environ["ORCA_TERMINAL_HANDLE"]
+        self.assertEqual(self.resume()[0], 2)
+        self.assertEqual(len(self.orca_calls()), calls)
+
+    def test_a_resume_that_cannot_confirm_a_step_says_not_to_run_it_again(self):
+        self.assertEqual(self.dispatch()[0], 0)
+        for environment, said in (({"FAKE_ORCA_SEND": "refused"}, "typed the resume command"), ({"FAKE_ORCA_IDLE": "never"}, "idle within 60 s")):
+            with self.subTest(environment=environment), mock.patch.dict(os.environ, {"FAKE_ORCA_LIVENESS": "unverifiable", **environment}):
+                code, output = self.resume()
+                self.assertEqual(code, 2, output)
+                self.assertIn(said, output)
+                self.assertIn("Do not run resume again", output)
+        self.assertNotIn(["orchestration", "send"], [call[:2] for call in self.orca_calls()])  # the session was not confirmed back
 
     def test_succeed_needs_every_handoff_section_before_launching(self):
         handoff = self.work / "handoff.md"

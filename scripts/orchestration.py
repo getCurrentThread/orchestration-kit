@@ -9,6 +9,8 @@ Run from the workspace root as `python -X utf8 -s -B orchestration.py <command>`
   inherit   append the succession to the lineage ledger (run by the successor)
   report    settle the token usage of finished dispatches, then summarise the dispatch ledger: models, denials, tiers,
             overrides, token budgets and usage
+  resume    bring back the Claude session of a worker whose agent ended without a report, in its own terminal and
+            for its own dispatch
 
 State is kept in ./.orchestration/ of the current directory.
 """
@@ -251,7 +253,7 @@ def unsettled_dispatch(earlier: list[str]) -> tuple[str, object] | None:
 
 
 class Refused(Exception):
-    """A directory cannot be made ready: the reason for the line, with the message for the master."""
+    """A command refuses before it changes anything: the reason for its line, with the message for the master."""
 
     def __init__(self, reason: str, message: str):
         super().__init__(message)
@@ -574,7 +576,11 @@ def dispatch(args: argparse.Namespace) -> int:
         print(json.dumps({"stage": "check", **decision}))
         return 2
     # The gate has validated the front matter; what it resolves to as a budget is the gate's to say, not ours.
-    code, budget = gate("budget", "--front-matter", json.dumps(decision.get("front_matter") or {}))
+    # An answer without it is a gate this code does not know: registered, the worker would run with no budget.
+    if not isinstance(decision.get("front_matter"), dict):
+        print(json.dumps({"stage": "check", **decision, "allow": False, "reason": "FRONT_MATTER_MISSING"}))
+        return fail("the gate's check answered without a `front_matter` object, so no budget can be resolved. Nothing was started")
+    code, budget = gate("budget", "--front-matter", json.dumps(decision["front_matter"]))
     if code != 0:
         print(json.dumps({"stage": "budget", **budget}))
         return 2
@@ -907,18 +913,43 @@ def session_model(agent: str, session: Path) -> str | None:
     return model
 
 
-def sessions_born(agent: str, folder: str, since: float) -> list[Path]:
-    """Return the session files an agent started in a folder at or after a time (epoch seconds), newest first."""
+def sessions_born(agent: str, folder: str, since: float, skipped: list[str] | None = None) -> list[Path]:
+    """Return the session files an agent started in a folder at or after a time (epoch seconds), newest first.
+
+    A file that goes away or cannot be read meanwhile is left out, and named in skipped when the caller passes one.
+    """
     if agent == "codex":
         # Measured with Orca 1.4.257: its Codex workers write ~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl.
         sessions, pattern = Path.home() / ".codex" / "sessions", "*/*/*/rollout-*.jsonl"
     else:
         # Claude Code stores a folder's transcripts under its path with every non-alphanumeric character replaced by "-".
         sessions, pattern = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", folder), "*.jsonl"
-    born = [path for path in sessions.glob(pattern) if path.stat().st_birthtime >= since]
-    if agent == "codex":  # one folder holds the rollouts of every Codex session on the machine
-        born = [path for path in born if rollout_folder(path) == os.path.normcase(os.path.normpath(folder))]
-    return sorted(born, key=lambda path: path.stat().st_birthtime, reverse=True)
+    born = []
+    for path in sessions.glob(pattern):
+        try:
+            made = path.stat().st_birthtime
+            # One folder holds the rollouts of every Codex session on the machine.
+            if made >= since and (agent != "codex" or rollout_folder(path) == os.path.normcase(os.path.normpath(folder))):
+                born.append((made, path))
+        except OSError as error:
+            if skipped is not None:
+                skipped.append(f"{path.name}: {error.strerror or error}")
+    return [path for _, path in sorted(born, reverse=True)]
+
+
+def sessions_naming(agent: str, folder: str, since: float, dispatch_id: str, skipped: list[str]) -> list[Path]:
+    """Return the session files born in a folder after a time whose first prompts name the dispatch.
+
+    A file that cannot be read is skipped and named in skipped: one such file does not end the report.
+    """
+    found = []
+    for session in sessions_born(agent, folder, since, skipped):
+        try:
+            if names_dispatch(session, dispatch_id):
+                found.append(session)
+        except OSError as error:
+            skipped.append(f"{session.name}: {error.strerror or error}")
+    return found
 
 
 def probe_model(args: argparse.Namespace) -> int:
@@ -1191,50 +1222,63 @@ def names_dispatch(session: Path, dispatch_id: str) -> bool:
     return any(dispatch_id in json.dumps(entry, ensure_ascii=False)[:BRIEF_CHARS] for entry in itertools.islice(prompts, 3))
 
 
-def settle(dispatch_id: str, said: list[str]) -> str:
+def pluck(value: object, *path: str) -> object:
+    """Follow keys through nested objects; None where one is missing."""
+    for key in path:
+        value = value.get(key) if isinstance(value, dict) else None
+    return value
+
+
+def utc_seconds(text: object) -> float | None:
+    """Return a time Orca writes as "YYYY-MM-DD HH:MM:SS" (UTC) in epoch seconds, or None for any other text."""
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def settle(dispatch_id: str, said: list[str], runtime: object = None) -> str:
     """Attach the measured usage of a dispatch's session to its ledger row once Orca shows the dispatch settled.
 
     Return what the report's line shows until the dispatch has a usage: "open", "unsettled" for an Orca answer
-    this code cannot read (said holds why), or "" once the gate has the dispatch settled.
+    this code cannot read (said holds why), or "" once the gate has the dispatch settled. A dispatch that Orca
+    does not know is settled as unmeasured, so that the next report does not ask again: runtime is the ledger's.
     """
     try:
         answer = orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full")
-    except OrcaMissing:
-        answer = {}
-    result = answer.get("result") if answer.get("ok") else None
-
-    def field(*path: str) -> object:
-        value = result
-        for key in path:
-            value = value.get(key) if isinstance(value, dict) else None
-        return value
-
-    outcome = field("projection", "outcome")
-    if isinstance(outcome, str) and outcome not in SETTLED:
-        return "open"  # its count would be partial, and the gate keeps the first measured result
-    worktree, agent, made = field("worker", "worktreeId"), field("worker", "startOptions", "agent"), field("dispatch", "dispatchedAt")
-    try:
-        since = datetime.strptime(made, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()  # Orca writes UTC
-    except (TypeError, ValueError):
-        since = None
-    present = {
-        "projection.outcome": outcome in SETTLED, "worker.worktreeId": isinstance(worktree, str),
-        "worker.startOptions.agent": isinstance(agent, str), "dispatch.dispatchedAt": since is not None,
-    }
-    if not all(present.values()):
-        missing = [name for name, found in present.items() if not found]
-        said.append(f"{dispatch_id}: not settled, Orca's answer {'lacks ' + ', '.join(missing) if result else 'is missing or refused'}")
+    except OrcaMissing as error:  # the CLI cannot be started: that is no refusal and no answer that lacks a field
+        said.append(f"{dispatch_id}: not settled, {error}")
         return "unsettled"
-    # shortcut: the turns of a worker's subagents are in files of their own (<session>/subagents/agent-*.jsonl, measured
-    # on this machine, none in the main file), which the gate does not read, so a count is the worker's main session
-    # only. Add those files when a worker's subagents matter.
-    matches = [
-        session for session in sessions_born(agent, worktree.split("::", 1)[-1], since)
-        if agent in ("claude", "codex") and names_dispatch(session, dispatch_id)
-    ]
-    options = ["--record", str(matches[0])] if len(matches) == 1 else []
-    if not options:
-        said.append(f"{dispatch_id}: {len(matches)} session files of {agent} in its folder, born after the dispatch, name it: no usage is measured")
+    result = answer.get("result") if answer.get("ok") else None
+    error = answer.get("error")
+    if isinstance(error, dict) and error.get("code") == "dispatch_not_found":
+        # Measured on Orca 1.4.259 (2026-11-15) for an id that never existed: ok false, error.code dispatch_not_found,
+        # exit 1. A ledger older than an `orca orchestration reset` holds such dispatches, and no later answer differs.
+        said.append(f"{dispatch_id}: Orca does not know this dispatch (dispatch_not_found), as after an `orca orchestration reset`: settled as unmeasured")
+        agent, options = runtime if isinstance(runtime, str) else "unknown", []
+    else:
+        outcome = pluck(result, "projection", "outcome")
+        if isinstance(outcome, str) and outcome not in SETTLED:
+            return "open"  # its count would be partial, and the gate keeps the first measured result
+        worktree, agent = pluck(result, "worker", "worktreeId"), pluck(result, "worker", "startOptions", "agent")
+        since = utc_seconds(pluck(result, "dispatch", "dispatchedAt"))
+        present = {
+            "projection.outcome": outcome in SETTLED, "worker.worktreeId": isinstance(worktree, str),
+            "worker.startOptions.agent": isinstance(agent, str), "dispatch.dispatchedAt": since is not None,
+        }
+        if not all(present.values()):
+            missing = [name for name, found in present.items() if not found]
+            said.append(f"{dispatch_id}: not settled, Orca's answer {'lacks ' + ', '.join(missing) if result else 'is missing or refused'}")
+            return "unsettled"
+        # shortcut: the turns of a worker's subagents are in files of their own (<session>/subagents/agent-*.jsonl, measured
+        # on this machine, none in the main file), which the gate does not read, so a count is the worker's main session
+        # only. Add those files when a worker's subagents matter.
+        skipped: list[str] = []
+        matches = sessions_naming(agent, worktree.split("::", 1)[-1], since, dispatch_id, skipped) if agent in ("claude", "codex") else []
+        said += [f"{dispatch_id}: session file {entry} skipped, it could not be read" for entry in skipped]
+        options = ["--record", str(matches[0])] if len(matches) == 1 else []
+        if not options:
+            said.append(f"{dispatch_id}: {len(matches)} session files of {agent} in its folder, born after the dispatch, name it: no usage is measured")
     code, settled = gate("settle", "--dispatch-id", dispatch_id, "--runtime", agent, *options)
     if code != 0:
         said.append(f"{dispatch_id}: the gate did not settle it: {settled.get('message') or settled.get('reason')}")
@@ -1275,7 +1319,7 @@ def report(args: argparse.Namespace) -> int:
     # Settling rewrites the ledger, so it is here and not in `watch`, which only reads.
     said: list[str] = []
     shown = {
-        row["job_id"]: settle(row["job_id"], said) for row in ledger_rows()
+        row["job_id"]: settle(row["job_id"], said, row.get("runtime")) for row in ledger_rows()
         if row.get("job_id") and row.get("decision") == "ALLOW" and "token_usage" not in row
     }
     done = gate_run("report", *(["--today"] if args.today else []))
@@ -1290,9 +1334,177 @@ def report(args: argparse.Namespace) -> int:
         print("Token budget and usage (dispatches with either, and open ones):")
         print("\n".join(lines))
     if said:
-        print("Token usage not measured or not settled:")
+        print("Token usage not measured or not settled, or a session file skipped:")
         print("\n".join(f"  {line}" for line in said))
     return done.returncode
+
+
+RESUME_MAIL = (
+    "Your session ended and was started again. Go on where you stopped, without redoing what is done. "
+    "Report with the Finish command of your preamble, exactly as written there."
+)
+RESUME_NOTICE = "You have 1 orchestration message. Run orca orchestration check."  # Orca's own, as the skill types it
+# Claude's line on exit (Claude Code 2.1.325, measured in Orca 1.4.259 on 2026-11-15). It is typed into a shell as it
+# stands, so only words free of shell syntax pass.
+RESUME_LINE = re.compile(r"claude(?: [^\s&|<>^%\"'`$;()]+)* --resume ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})")
+# shortcut: a prompt is a line that ends in > $ # or %. A theme that ends it in another character reads as an agent that
+# may still run, and the refusal says so; widen this once such a prompt turns up.
+SHELL_PROMPT = re.compile(r".+[>$#%]")
+
+
+def ended_session(tail: list[str]) -> tuple[str, str] | None:
+    """Return Claude's resume command and its session id if the text ends with Claude's resume line and a shell prompt.
+
+    Orca's liveness `unverifiable` is no proof that an agent has ended (measured on 1.4.259); the screen is. An agent
+    that still runs ends the text with its own screen.
+    """
+    lines = [line.strip() for line in tail if line.strip()]
+    if len(lines) < 3 or lines[-3] != "Resume this session with:" or not SHELL_PROMPT.fullmatch(lines[-1]):
+        return None
+    found = RESUME_LINE.fullmatch(lines[-2])
+    return (lines[-2], found.group(1)) if found else None
+
+
+def resumable(dispatch_id: str) -> dict[str, str]:
+    """Prove that the Claude agent of a registered dispatch has ended while its terminal is there, and return the
+    terminal, the command that brings its session back, the session id and the Run. Raise Refused otherwise.
+
+    Reads only. A session started twice edits the same files twice, so each doubt is a refusal.
+    """
+    ledger = Path.cwd() / ".orchestration" / "dispatch-ledger.jsonl"  # not state_dir(): a refusal leaves no folder behind
+    if not ledger.is_file() or not any(row.get("job_id") == dispatch_id and row.get("decision") == "ALLOW" for row in ledger_rows()):
+        raise Refused(
+            "NOT_REGISTERED",
+            f"the ledger of this workspace ({ledger}) does not hold {dispatch_id} as a registered dispatch. Run this from the "
+            "workspace root that dispatched it, and name the `dispatch` of its dispatch line",
+        )
+    answer = orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full")
+    if not answer:
+        raise Refused("ORCA_SILENT", f"Orca gave no answer about {dispatch_id}. See that `orca status` answers, then run this again")
+    if not answer.get("ok"):
+        raise Refused("ORCA_REFUSED", f"Orca did not show {dispatch_id}; it said {json.dumps(answer.get('error'))[:300]}. Check the id against the dispatch line")
+    result = answer["result"] if isinstance(answer.get("result"), dict) else None
+
+    def need(path: str) -> str:
+        value = pluck(result, *path.split("."))
+        if not isinstance(value, str) or not value:
+            raise Refused(
+                "ORCA_SHAPE",
+                f"Orca's answer about {dispatch_id} lacks `{path}`, which this command reads: the Orca CLI may have changed. "
+                f"Look at the worker with `orca orchestration worker-show --dispatch {dispatch_id}` and tell the owner",
+            )
+        return value
+
+    outcome = need("projection.outcome")
+    if outcome == "succeeded":
+        raise Refused("SUCCEEDED", f"Orca shows {dispatch_id} as succeeded, so there is nothing to resume. Review its report as for any worker")
+    if outcome == "failed":
+        raise Refused(
+            "FAILED",
+            f"Orca shows {dispatch_id} as failed and has given the dispatch up: a session started in its terminal could not "
+            f"report for it. Dispatch the task again with `ORCHESTRATION dispatch ... --follows {dispatch_id}`",
+        )
+    if outcome != "in_progress":
+        raise Refused(
+            "OUTCOME_UNKNOWN",
+            f"Orca gives {dispatch_id} the outcome {outcome!r}, which this command does not know. Look at it with "
+            f"`orca orchestration worker-show --dispatch {dispatch_id}` and tell the owner",
+        )
+    if need("projection.liveness.verdict") == "live":
+        raise Refused(
+            "AGENT_LIVE",
+            f"Orca shows the agent of {dispatch_id} as live, so there is nothing to bring back. Talk to it with "
+            f"`orca orchestration send --to dispatch:{dispatch_id}`, or wait for its report",
+        )
+    agent = need("worker.startOptions.agent")
+    if agent != "claude":
+        raise Refused(
+            "NOT_CLAUDE",
+            f"{dispatch_id} runs {agent}, and this command brings back Claude sessions only. Look at it with "
+            f"`orca orchestration worker-show --dispatch {dispatch_id}` and tell the owner",
+        )
+    terminal, run_id = need("worker.agentTerminalHandle"), need("dispatch.runId")
+    folder, since = need("worker.worktreeId").split("::", 1)[-1], utc_seconds(need("dispatch.dispatchedAt"))
+    if since is None:
+        raise Refused("ORCA_SHAPE", f"Orca's `dispatch.dispatchedAt` for {dispatch_id} is not a time this command reads. Tell the owner")
+
+    read = orca_result("terminal", "read", "--terminal", terminal)
+    tail = pluck(read, "terminal", "tail")
+    if read is None or not isinstance(tail, list) or not all(isinstance(line, str) for line in tail):
+        raise Refused(
+            "TERMINAL_UNREADABLE",
+            f"Orca did not give the text of terminal {terminal} in a shape this command reads. See that `orca status` answers, "
+            f"and read it with `orca terminal read --terminal {terminal} --screen`",
+        )
+    ended = ended_session(tail)
+    if ended is None:
+        raise Refused(
+            "AGENT_NOT_PROVEN_ENDED",
+            f"the text of terminal {terminal} does not end with Claude's resume line and a shell prompt, so the agent may still "
+            f"run, and a session started twice edits the same files twice. Read its screen with `orca terminal read --terminal "
+            f"{terminal} --screen`: an agent at work is reached with `orca orchestration send --to dispatch:{dispatch_id}`. "
+            "A terminal that is gone has failed the dispatch, and one whose agent ended without that line is for the owner",
+        )
+    command, session = ended
+    skipped: list[str] = []
+    # Never from `orca search` alone: it returns the reflector session that the owner's autoharness starts when a worker's
+    # session ends (measured on 1.4.259), and resuming that one resumes the wrong thing. The file's name is the session id.
+    if session not in {path.stem for path in sessions_naming("claude", folder, since, dispatch_id, skipped)}:
+        raise Refused(
+            "SESSION_MISMATCH",
+            f"the session {session} of the resume line in {terminal} is not the session file of {dispatch_id} in {folder} "
+            f"(first prompt naming it)" + (f"; skipped: {', '.join(skipped)}" if skipped else "") +
+            ". The terminal may hold another session, so nothing was started. Read it with "
+            f"`orca terminal read --terminal {terminal} --screen` and tell the owner",
+        )
+    return {"terminal": terminal, "command": command, "session": session, "run": run_id}
+
+
+def resume(args: argparse.Namespace) -> int:
+    """Bring back the Claude session of a worker whose agent has ended while its terminal is there.
+
+    It runs in the worker's own terminal, so the handle, the launch flags and the folder are the worker's, and its
+    `worker_done` settles the same dispatch (measured on Orca 1.4.259 on 2026-11-15: three workers; a new terminal's
+    handle is refused as worker_identity_changed). No dispatch is made, nothing is written to the ledger and no attempt
+    at the task is used.
+    """
+    handle = os.environ.get("ORCA_TERMINAL_HANDLE")
+    if not handle:
+        return fail("ORCA_TERMINAL_HANDLE is not set; run the master inside an Orca terminal")
+    try:
+        found = resumable(args.dispatch)
+    except Refused as refusal:
+        print(json.dumps({"stage": "resume", "allow": False, "dispatch": args.dispatch, "reason": refusal.reason}))
+        return fail(str(refusal))
+    terminal = found["terminal"]
+    # From here on a step that fails may have reached the terminal: a second run would start the session twice.
+    again = f"Do not run resume again, which would start the session twice. Read the terminal first: orca terminal read --terminal {terminal} --screen"
+    typed = orca_answer("terminal", "send", "--terminal", terminal, "--text", found["command"], "--enter")
+    if pluck(typed, "result", "send", "accepted") is not True:
+        return fail(f"Orca did not confirm that it typed the resume command into {terminal} (it said {json.dumps(typed)[:300]}). {again}")
+    # The session is back when Orca sees the TUI idle (3 s in the measurement); text typed earlier may be lost.
+    waited = orca_answer("terminal", "wait", "--terminal", terminal, "--for", "tui-idle", "--timeout-ms", "60000")
+    if pluck(waited, "result", "wait", "satisfied") is not True:
+        return fail(
+            f"The resume command was typed into {terminal}, and Orca did not report the session idle within 60 s (it said "
+            f"{json.dumps(waited)[:300]}). {again}. If the session is up, the message and the notice are left: do them by hand "
+            f"as 'After an Orca restart' in the master skill says."
+        )
+    mailed = orca_answer(
+        "orchestration", "send", "--to", f"dispatch:{args.dispatch}", "--subject", "Your session was started again",
+        "--body", RESUME_MAIL, "--from", handle,
+    )
+    if not isinstance(pluck(mailed, "result", "messageId"), str):
+        return fail(f"The session runs again in {terminal}, but Orca did not queue the message to it (it said {json.dumps(mailed)[:300]}). Send it and type the notice by hand, as 'After an Orca restart' in the master skill says. {again}")
+    noticed = orca_answer("terminal", "send", "--terminal", terminal, "--text", RESUME_NOTICE, "--enter")
+    if pluck(noticed, "result", "send", "accepted") is not True:
+        return fail(f"The session runs again and the message is queued, but Orca did not confirm the notice (it said {json.dumps(noticed)[:300]}). Type it into {terminal} by hand: {RESUME_NOTICE!r}")
+    wait = f"keep one `ORCHESTRATION watch --run {found['run']}` running in the background (start it again if it has ended), then end your turn"
+    print(json.dumps({
+        "stage": "resume", "allow": True, "dispatch": args.dispatch, "terminal": terminal, "session": found["session"],
+        "run": found["run"], "next": wait,
+    }))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1368,6 +1580,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = commands.add_parser("report", help="summarise the dispatch ledger")
     sub.add_argument("--today", action="store_true", help="only today's entries (UTC)")
     sub.set_defaults(handler=report)
+
+    sub = commands.add_parser("resume", help="bring back the Claude session of a worker whose agent ended without a report")
+    sub.add_argument("--dispatch", required=True, help="the worker's dispatch, as the dispatch line gives it")
+    sub.set_defaults(handler=resume)
 
     sub = commands.add_parser("probe-model")  # internal: called by the gate during register
     sub.add_argument("agent", choices=("claude", "codex"))
