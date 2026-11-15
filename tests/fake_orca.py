@@ -1,6 +1,8 @@
 """Stand-in for the Orca CLI in tests: logs every call and replays the JSON shapes of Orca 1.4.257.
 
 `worktree current`, `agent launch` and the two answers of `status` while the app is closed were measured on 1.4.258.
+`worker-show`'s `result.worker.worktreeId`, `result.worker.startOptions.agent` and `result.dispatch.dispatchedAt`
+(UTC, "YYYY-MM-DD HH:MM:SS") were measured on 1.4.259.
 """
 
 import json
@@ -66,10 +68,14 @@ if command == "orchestration worker-start":
     else:
         transcripts = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", folder)
         transcripts.mkdir(parents=True, exist_ok=True)
-        entry = {"type": "assistant", "isSidechain": False, "message": {"model": model}}
+        name = os.environ.get("FAKE_ORCA_DISPATCH", "test")  # a test that starts a second worker names it
+        Path(os.environ["FAKE_ORCA_LOG"] + ".dispatched").write_text(time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), encoding="utf-8")
+        prompt = {"type": "user", "isSidechain": False, "message": {"role": "user", "content": f"You are a dispatched worker. Your Dispatch ID is ctx_{name}"}}
+        usage = {"input_tokens": 1000, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 700, "output_tokens": 300}
+        entry = {"type": "assistant", "isSidechain": False, "message": {"id": "msg_1", "model": model, "usage": usage}}
         # A file of its own per worker, as a real session writes: the wrapper reads the one born after the dispatch.
-        (transcripts / f"worker-{time.time_ns()}.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
-    name = os.environ.get("FAKE_ORCA_DISPATCH", "test")  # a test that starts a second worker names it
+        (transcripts / f"worker-{time.time_ns()}.jsonl").write_text(json.dumps(prompt) + "\n" + json.dumps(entry) + "\n", encoding="utf-8")
+    name = os.environ.get("FAKE_ORCA_DISPATCH", "test")
     result = {
         "state": "ready",
         "runId": "run_test",
@@ -82,13 +88,17 @@ elif command == "orchestration worker-show":
     outcome = os.environ.get("FAKE_ORCA_OUTCOME", "in_progress")
     if outcome == "no answer":  # not "": Windows drops a variable that is set to nothing
         sys.exit(1)
+    dispatched = Path(os.environ["FAKE_ORCA_LOG"] + ".dispatched")
     result = {
-        "dispatch": {"id": "ctx_test", "taskId": "task_test", "status": "dispatched"},
+        "dispatch": {"id": "ctx_test", "taskId": "task_test", "status": "dispatched", "dispatchedAt": dispatched.read_text(encoding="utf-8") if dispatched.exists() else "2000-01-01 00:00:00"},
+        "worker": {"dispatchId": dispatch, "worktreeId": f"00000000::{folder}", "startOptions": {"agent": os.environ.get("FAKE_ORCA_AGENT", "claude")}},
         "projection": {"dispatchId": dispatch, "outcome": outcome},
         # Orca leaves the field out when it did not look, and gives null when it looked and found no wait. The
         # shape is from `orca orchestration worker-show --help`: no parked worker was there to measure.
         "observation": {"agentWait": {"evidence": "prompt-text"} if dispatch in frame().get("parked", []) else None},
     }
+    if os.environ.get("FAKE_ORCA_SHOW") == "lacks":  # an answer without the fields the usage is found by
+        del result["worker"]["worktreeId"]
 elif command == "orchestration dispatch-show":
     result = {"dispatch": {"id": "ctx_test", "task_id": "task_test", "status": "dispatched"}}
 elif command == "agent launch":

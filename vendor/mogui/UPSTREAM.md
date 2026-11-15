@@ -16,8 +16,8 @@
 `dispatch_timeline.py`, `worker_reap.py` and `watchdog.py` are present only because the gate imports them.
 Their process inspection code (`ps`, `lsof`, `/proc`, in `WorkerReaper`) is never reached from the gate: the
 gate reaches `worker_reap.py` only through `resolve_task_id_from_dispatch_id`, which asks Orca.
-`token_budget.py` is present because `scripts/dispatch-gate` imports it; nothing in `scripts/orchestration.py`
-uses it yet.
+`token_budget.py` is read through the gate: `dispatch` asks `budget` and passes the result to `register`, and
+`report` calls `settle`, which reads the session file with it. Nothing in `scripts/orchestration.py` imports it.
 
 To check a file: `git hash-object --no-filters <path here>` equals `git rev-parse <commit>:<upstream path>`
 in a clone of the source.
@@ -54,6 +54,7 @@ of `tests/fake_orca.py` and in `skills/master/SKILL.md`.
 | `inherit`: whether the predecessor's terminal is still open | `succession.py` (`detect_duplicate_instances`, `retire_predecessor`). Nothing is closed here: that stays the owner's decision |
 | `hooks/hooks.json` with `compacted` | `master-ops/scripts/compaction-probe.sh`. No recall quiz and no log |
 | `report` | `scripts/dispatch-gate report`, vendored: a pass-through, followed by every task with more than one attempt |
+| `dispatch` and `report`: the token budget and its measured usage | `resolve_token_budget`, the budget paragraph of the worker prompt, and the settlement at `worker_done` or `reap` in `master-ops/scripts/dispatch`. `dispatch` passes the `front_matter` of the gate's `check` to the gate's `budget` and the result to `register` (`token_budget` and `tokens_basis` are on the dispatch line). The paragraph is a sentence in the contract template, since the contract file is the worker's prompt. Upstream settles from the session record the worker names in `worker_done`; here `report` settles each dispatch Orca shows as settled, from the one session file born in the worker's folder after the dispatch whose first prompt names it (none or several: `unmeasured`), and lists an open one as `open`. A count is the worker's main session only: its subagents' turns are in files of their own |
 | Three rules of `skills/master/`: a worker in its own workspace commits before it reports, three failed attempts stop the retries, and a research, review or design report gives evidence for every verdict (`contract-template.md`) | `master-ops/docs/runbooks/contract-conventions.md`, and `docs/en/resident-orchestrator-loop.md` of mogui-agent-harness. The evidence rule is clause 17 of the runbook; the wording here is this repository's own |
 
 ## Not taken

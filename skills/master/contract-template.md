@@ -14,7 +14,8 @@ Front matter rules (checked by the dispatch gate; a malformed block is refused):
 - Required: tier (the model's tier in config/model-tier-policy.json), runtime (claude or codex), repo
   (the repository's or the folder's name, as you would call it: the ledger records it and nothing is
   compared with it).
-- Optional: budget (rounds=N, hours=N, cost_usd=N.N) and writes. Do not add other keys.
+- Optional: budget (rounds=N, hours=N, cost_usd=N.N, tokens=N), tokens_basis (total, the default, or uncached: input
+  without cache reads, plus output; it says how tokens=N is counted) and writes. Do not add other keys.
 Delete this comment before dispatching.
 -->
 
@@ -37,6 +38,9 @@ What to send back with `worker_done`: changed files, the output of each check, a
 State where the work is: the branch and commit that hold it, or that it is uncommitted in the working
 tree. In a workspace of your own, commit it on your branch before you report: nothing else carries it out
 of there. Never push.
+
+If your front matter has `tokens=N` in `budget`, N is the cap on the tokens this task may use, counted from your
+session record after you report. Ask your coordinator before you expect to go over it, instead of going on.
 
 In research, review or design work, give every verdict (adopt, defer, drop or any other) four things: what the
 item does, in one sentence; the source of each fact and the date it was read; how it relates to what the owner
