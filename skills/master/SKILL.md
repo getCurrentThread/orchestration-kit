@@ -108,6 +108,13 @@ hours; `--tier-override "<reason>"` passes one more, only when the owner agrees.
 `MODEL_PROBE_FAILED`) or is another one of the declared tier or a lower one (`MODEL_MISMATCH`): tell the
 owner. `ORCHESTRATION report [--today]` summarises the ledger.
 
+### Token budget
+
+A contract may declare `budget: [tokens=N]` (and `tokens_basis: uncached` to leave cached input out); the worker is told.
+`ORCHESTRATION report` measures every settled dispatch from its session file and prints budget and usage per dispatch
+(`open`, `unmeasured`, or `over`): put each `over` into your report to the owner. A count is the worker's main session
+only: its subagents' turns are in files of their own, which the gate does not read.
+
 ## A task for a project directory
 
 With `--project <directory>` the wrapper makes the directory ready before the gate is asked, and prints a

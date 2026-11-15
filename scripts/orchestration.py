@@ -7,7 +7,8 @@ Run from the workspace root as `python -X utf8 -s -B orchestration.py <command>`
   start     from a terminal outside Orca: start a fresh master in Orca on this checkout, with what the owner said
   succeed   validate a handoff document and launch a successor master in Orca
   inherit   append the succession to the lineage ledger (run by the successor)
-  report    summarise the dispatch ledger: models, denials, tiers, overrides
+  report    settle the token usage of finished dispatches, then summarise the dispatch ledger: models, denials, tiers,
+            overrides, token budgets and usage
 
 State is kept in ./.orchestration/ of the current directory.
 """
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import msvcrt
 import os
@@ -571,6 +573,11 @@ def dispatch(args: argparse.Namespace) -> int:
     if code != 0:
         print(json.dumps({"stage": "check", **decision}))
         return 2
+    # The gate has validated the front matter; what it resolves to as a budget is the gate's to say, not ours.
+    code, budget = gate("budget", "--front-matter", json.dumps(decision.get("front_matter") or {}))
+    if code != 0:
+        print(json.dumps({"stage": "budget", **budget}))
+        return 2
     # The session-start hook reads this after a compaction, to remind the master and no other session here.
     # Written before the worker exists: a write that fails must not leave a running worker without its line.
     (state_dir() / "master").write_text(handle, encoding="utf-8")
@@ -600,12 +607,14 @@ def dispatch(args: argparse.Namespace) -> int:
     register = [
         "register", "--job-id", dispatch_id, "--contract-sha", decision["contract_sha"],
         "--runtime", args.agent, "--tier-policy", str(POLICY), "--orchestration-task", task_id,
-        "--declared-model", entry,
+        "--declared-model", entry, "--tokens-basis", budget["tokens_basis"], "--token-budget-source", budget["source"],
         # The gate's `card` column: the task this dispatch is an attempt at. Its own `attempt` counts one contract file.
         "--card", str(origin or task_id),
         "--probe-cmd",
         subprocess.list2cmdline([orca(), "orchestration", "worker-show", "--dispatch", dispatch_id, "--json"]),
     ]
+    if budget["token_budget"] is not None:
+        register += ["--token-budget", str(budget["token_budget"])]
     if folder:
         probe = [*PYTHON, str(Path(__file__).resolve()), "probe-model", args.agent, folder, str(started_at)]
         register += ["--model-probe-cmd", subprocess.list2cmdline(probe)]
@@ -614,6 +623,7 @@ def dispatch(args: argparse.Namespace) -> int:
     started = {
         "stage": "register", "dispatch": dispatch_id, "task": task_id, "run": receipt.get("runId"), "model": model,
         "workspace": folder, "origin": origin or task_id, "task_attempt": len(tried) + 1,
+        "token_budget": budget["token_budget"], "tokens_basis": budget["tokens_basis"],
     }
     if code != 0:
         print(json.dumps({**started, **registered}))
@@ -897,23 +907,27 @@ def session_model(agent: str, session: Path) -> str | None:
     return model
 
 
-def probe_model(args: argparse.Namespace) -> int:
-    """Print the model family of the newest session an agent started in a folder since a given time."""
-    if args.agent == "codex":
+def sessions_born(agent: str, folder: str, since: float) -> list[Path]:
+    """Return the session files an agent started in a folder at or after a time (epoch seconds), newest first."""
+    if agent == "codex":
         # Measured with Orca 1.4.257: its Codex workers write ~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl.
         sessions, pattern = Path.home() / ".codex" / "sessions", "*/*/*/rollout-*.jsonl"
     else:
         # Claude Code stores a folder's transcripts under its path with every non-alphanumeric character replaced by "-".
-        sessions, pattern = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", args.folder), "*.jsonl"
-    folder = os.path.normcase(os.path.normpath(args.folder))
+        sessions, pattern = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", folder), "*.jsonl"
+    born = [path for path in sessions.glob(pattern) if path.stat().st_birthtime >= since]
+    if agent == "codex":  # one folder holds the rollouts of every Codex session on the machine
+        born = [path for path in born if rollout_folder(path) == os.path.normcase(os.path.normpath(folder))]
+    return sorted(born, key=lambda path: path.stat().st_birthtime, reverse=True)
+
+
+def probe_model(args: argparse.Namespace) -> int:
+    """Print the model family of the newest session an agent started in a folder since a given time."""
     deadline = time.monotonic() + 25  # the gate kills this probe after 30 seconds
     while time.monotonic() < deadline:
         # shortcut: takes the newest session born after the dispatch; another session started in the same folder
         # in that window could be read instead. Switch to the session id once Orca reports it in the receipt.
-        born = [path for path in sessions.glob(pattern) if path.stat().st_birthtime >= args.since - 2]
-        if args.agent == "codex":  # one folder holds the rollouts of every Codex session on the machine
-            born = [path for path in born if rollout_folder(path) == folder]
-        for session in sorted(born, key=lambda path: path.stat().st_birthtime, reverse=True)[:1]:
+        for session in sessions_born(args.agent, args.folder, args.since - 2)[:1]:
             model = session_model(args.agent, session)
             if model:
                 # The session holds a versioned id; the gate compares families. An id outside the policy stays as it is.
@@ -1160,16 +1174,124 @@ def compacted(args: argparse.Namespace) -> int:
     return 0
 
 
+BRIEF_CHARS = 4000  # Orca's brief names the dispatch ~1,200 characters in; a digest session that quotes it does so far later
+
+
+def names_dispatch(session: Path, dispatch_id: str) -> bool:
+    """Say whether one of the first prompts of a session opens by naming the dispatch. A Codex rollout starts
+    with its AGENTS.md as a user message, so the dispatch prompt is not always the first.
+
+    Measured on this machine: a headless digest or reflector session born later in the same folder quotes the
+    brief too, but 10,000 or more characters into a prompt of 200,000.
+    """
+    prompts = (
+        entry for entry in session_records(session)
+        if entry.get("type") == "user" or (isinstance(entry.get("payload"), dict) and entry["payload"].get("role") == "user")
+    )
+    return any(dispatch_id in json.dumps(entry, ensure_ascii=False)[:BRIEF_CHARS] for entry in itertools.islice(prompts, 3))
+
+
+def settle(dispatch_id: str, said: list[str]) -> str:
+    """Attach the measured usage of a dispatch's session to its ledger row once Orca shows the dispatch settled.
+
+    Return what the report's line shows until the dispatch has a usage: "open", "unsettled" for an Orca answer
+    this code cannot read (said holds why), or "" once the gate has the dispatch settled.
+    """
+    try:
+        answer = orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full")
+    except OrcaMissing:
+        answer = {}
+    result = answer.get("result") if answer.get("ok") else None
+
+    def field(*path: str) -> object:
+        value = result
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        return value
+
+    outcome = field("projection", "outcome")
+    if isinstance(outcome, str) and outcome not in SETTLED:
+        return "open"  # its count would be partial, and the gate keeps the first measured result
+    worktree, agent, made = field("worker", "worktreeId"), field("worker", "startOptions", "agent"), field("dispatch", "dispatchedAt")
+    try:
+        since = datetime.strptime(made, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()  # Orca writes UTC
+    except (TypeError, ValueError):
+        since = None
+    present = {
+        "projection.outcome": outcome in SETTLED, "worker.worktreeId": isinstance(worktree, str),
+        "worker.startOptions.agent": isinstance(agent, str), "dispatch.dispatchedAt": since is not None,
+    }
+    if not all(present.values()):
+        missing = [name for name, found in present.items() if not found]
+        said.append(f"{dispatch_id}: not settled, Orca's answer {'lacks ' + ', '.join(missing) if result else 'is missing or refused'}")
+        return "unsettled"
+    # shortcut: the turns of a worker's subagents are in files of their own (<session>/subagents/agent-*.jsonl, measured
+    # on this machine, none in the main file), which the gate does not read, so a count is the worker's main session
+    # only. Add those files when a worker's subagents matter.
+    matches = [
+        session for session in sessions_born(agent, worktree.split("::", 1)[-1], since)
+        if agent in ("claude", "codex") and names_dispatch(session, dispatch_id)
+    ]
+    options = ["--record", str(matches[0])] if len(matches) == 1 else []
+    if not options:
+        said.append(f"{dispatch_id}: {len(matches)} session files of {agent} in its folder, born after the dispatch, name it: no usage is measured")
+    code, settled = gate("settle", "--dispatch-id", dispatch_id, "--runtime", agent, *options)
+    if code != 0:
+        said.append(f"{dispatch_id}: the gate did not settle it: {settled.get('message') or settled.get('reason')}")
+        return "unsettled"
+    return ""
+
+
+def usage_count(usage: dict, basis: str) -> int | None:
+    """Return a measured usage on a basis, as token_budget.py defines them: input minus cached input plus output, or the total."""
+    try:
+        count = usage["input"] - usage["cached_input"] + usage["output"] if basis == "uncached" else usage["total"]
+    except (KeyError, TypeError):
+        return None
+    return count if isinstance(count, int) else None
+
+
+def token_line(row: dict, shown: str) -> str | None:
+    """Return the report's line of a registered dispatch that has a budget or a usage, or is open; shown is its usage while it has none."""
+    budget, usage, basis = row.get("token_budget"), row.get("token_usage"), row.get("tokens_basis") or "total"
+    if budget is None and usage is None and shown != "open":  # an open dispatch is listed: its usage is still to come
+        return None
+    text = shown
+    if isinstance(usage, dict):
+        count = usage_count(usage, basis) if usage.get("source") != "unmeasured" else None
+        if usage.get("source") == "unmeasured":
+            text = f"unmeasured ({usage.get('why')})"
+        elif count is None:
+            text = "unreadable"
+        else:
+            text = f"{count} {basis}" + (" over" if isinstance(budget, int) and count > budget else "")
+    return f"  {row['job_id']}: budget {f'{budget} {basis}' if budget is not None else 'unset'}, usage {text}"
+
+
 def report(args: argparse.Namespace) -> int:
     ledger = Path.cwd() / ".orchestration" / "dispatch-ledger.jsonl"
     if not ledger.is_file():  # an empty summary from the wrong folder would read as "nothing was dispatched"
         return fail(f"no dispatch ledger at {ledger}; run this from the workspace root")
+    # Settling rewrites the ledger, so it is here and not in `watch`, which only reads.
+    said: list[str] = []
+    shown = {
+        row["job_id"]: settle(row["job_id"], said) for row in ledger_rows()
+        if row.get("job_id") and row.get("decision") == "ALLOW" and "token_usage" not in row
+    }
     done = gate_run("report", *(["--today"] if args.today else []))
     print(done.stdout + done.stderr, end="")
     # The gate counts per contract file. What a master and its successor need is the count per task.
     retried = {task: ids for task, ids in attempts().items() if len(ids) > 1}
     print("Tasks with more than one attempt (all ledger entries, oldest first):")
     print("\n".join(f"  {task}: {', '.join(ids)}" for task, ids in retried.items()) or "  <none>")
+    lines = [line for row in ledger_rows() if row.get("job_id") and row.get("decision") == "ALLOW"
+             for line in [token_line(row, shown.get(row["job_id"]) or "unsettled")] if line]
+    if lines:
+        print("Token budget and usage (dispatches with either, and open ones):")
+        print("\n".join(lines))
+    if said:
+        print("Token usage not measured or not settled:")
+        print("\n".join(f"  {line}" for line in said))
     return done.returncode
 
 

@@ -6,7 +6,9 @@ from [baksohyeon/mogui-ADE-orchestrator](https://github.com/baksohyeon/mogui-ADE
 Runs and mail. The plugin adds:
 
 - **Dispatch gate and ledger**: a worker starts only after its contract passes the gate, and every decision
-  is appended to a ledger. A retry or a fix is one more attempt at the same task (`dispatch --follows`).
+  is appended to a ledger. A retry or a fix is one more attempt at the same task (`dispatch --follows`). A
+  contract's `budget: [tokens=N]` is recorded at dispatch, and `report` measures each settled worker's usage
+  from its session file and shows it against the budget.
 - **Project directories made ready**: `dispatch --project <directory>` adds the directory to Orca and
   installs the repository harness before the worker starts, without overwriting anything.
 - **A wait that survives an Orca restart**: a read-only `watch` that wakes the master when Orca does not.

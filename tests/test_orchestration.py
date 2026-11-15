@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -71,9 +72,9 @@ class OrchestrationTest(unittest.TestCase):
         self.addCleanup(os.chdir, Path.cwd())
         os.chdir(self.work)
 
-    def contract(self, tier="efficient", runtime="claude"):
+    def contract(self, tier="efficient", runtime="claude", front=""):
         path = self.work / "contract.md"
-        text = f"---\ntier: {tier}\nruntime: {runtime}\nrepo: demo\n---\n\n# Say READY\n\nReply READY.\n"
+        text = f"---\ntier: {tier}\nruntime: {runtime}\nrepo: demo\n{front}---\n\n# Say READY\n\nReply READY.\n"
         path.write_text(text, encoding="utf-8")
         return str(path)
 
@@ -86,9 +87,9 @@ class OrchestrationTest(unittest.TestCase):
                 code = stop.code
         return code, output.getvalue()
 
-    def dispatch(self, *place, model=EFFICIENT, effort="low", tier="efficient", agent="claude"):
+    def dispatch(self, *place, model=EFFICIENT, effort="low", tier="efficient", agent="claude", front=""):
         launch = ["--model", model] if model else []
-        return self.cli("dispatch", "--contract", self.contract(tier, agent), "--agent", agent, *launch, "--effort", effort, *place)
+        return self.cli("dispatch", "--contract", self.contract(tier, agent, front), "--agent", agent, *launch, "--effort", effort, *place)
 
     def ready(self, name):
         """A project that already carries a harness whose setup has run."""
@@ -206,6 +207,89 @@ class OrchestrationTest(unittest.TestCase):
         report = self.cli("report")[1]
         self.assertIn(f"{EFFICIENT}: dispatches=", report)  # the gate's own summary, passed on
         self.assertIn("task_test: ctx_test, ctx_fix, ctx_third", report)
+
+    def transcripts(self):
+        """The folder the fake Orca's Claude worker writes its session files to."""
+        return Path(os.environ["USERPROFILE"]) / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", self.work.as_posix())
+
+    def token_lines(self, output):
+        return [line for line in output.splitlines() if line.startswith("  ctx_") and "budget" in line]
+
+    def test_a_declared_token_budget_reaches_register_and_a_contract_without_one_registers_null(self):
+        code, output = self.dispatch(front="budget: [tokens=2000]\ntokens_basis: uncached\n")
+        self.assertEqual(code, 0, output)
+        line = json.loads(output)
+        self.assertEqual((line["token_budget"], line["tokens_basis"]), (2000, "uncached"))
+        row = self.ledger()[1]
+        self.assertEqual((row["token_budget"], row["tokens_basis"], row["token_budget_source"]), (2000, "uncached", "declared"))
+        # The gate validates the front matter; the wrapper passes on what the gate says.
+        self.assertEqual(self.dispatch(front="budget: [tokens=0]\n")[0], 2)
+        self.assertEqual(len(self.worker_starts()), 1)
+
+    def test_a_contract_without_a_budget_registers_null(self):
+        code, output = self.dispatch()
+        self.assertEqual(code, 0, output)
+        line = json.loads(output)
+        self.assertEqual((line["token_budget"], line["tokens_basis"]), (None, "total"))
+        self.assertIsNone(self.ledger()[1]["token_budget"])
+
+    def test_a_settled_dispatch_is_measured_from_its_session_and_over_its_budget_is_marked(self):
+        self.assertEqual(self.dispatch(front="budget: [tokens=2000]\n")[0], 0)
+        # A later session in the folder that quotes the brief deep inside a long prompt (a digest) is not the worker's.
+        digest = {"type": "user", "message": {"role": "user", "content": "x" * 20000 + " ctx_test"}}
+        (self.transcripts() / "digest.jsonl").write_text(json.dumps(digest) + "\n", encoding="utf-8")
+        os.environ["FAKE_ORCA_OUTCOME"] = "succeeded"
+        output = self.cli("report")[1]
+        self.assertEqual(self.token_lines(output), ["  ctx_test: budget 2000 total, usage 2200 total over"])
+        self.assertEqual(self.ledger()[1]["token_usage"]["total"], 2200)
+        shown = len([call for call in self.orca_calls() if call[:2] == ["orchestration", "worker-show"]])
+        ledger = (self.work / ".orchestration" / "dispatch-ledger.jsonl").read_bytes()
+        self.assertEqual(self.token_lines(self.cli("report")[1]), self.token_lines(output))  # nothing is settled again
+        self.assertEqual((self.work / ".orchestration" / "dispatch-ledger.jsonl").read_bytes(), ledger)
+        self.assertEqual(len([call for call in self.orca_calls() if call[:2] == ["orchestration", "worker-show"]]), shown)
+
+    def test_usage_is_counted_on_the_budgets_basis_and_a_dispatch_without_a_budget_still_shows_it(self):
+        self.assertEqual(self.dispatch(front="budget: [tokens=2000]\ntokens_basis: uncached\n")[0], 0)
+        os.environ["FAKE_ORCA_OUTCOME"] = "failed"  # a failed dispatch is settled too
+        self.assertEqual(self.token_lines(self.cli("report")[1]), ["  ctx_test: budget 2000 uncached, usage 1500 uncached"])
+        os.environ["FAKE_ORCA_DISPATCH"] = "plain"
+        self.assertEqual(self.dispatch()[0], 0)
+        self.assertIn("  ctx_plain: budget unset, usage 2200 total", self.cli("report")[1])
+
+    def test_a_dispatch_that_orca_shows_open_is_not_settled(self):
+        self.assertEqual(self.dispatch()[0], 0)
+        self.assertEqual(self.token_lines(self.cli("report")[1]), ["  ctx_test: budget unset, usage open"])  # listed, with no budget
+        self.assertEqual(orchestration.token_line({"job_id": "ctx_a", "token_budget": 2000}, "open"), "  ctx_a: budget 2000 total, usage open")
+        self.assertNotIn("token_usage", self.ledger()[1])
+        os.environ["FAKE_ORCA_OUTCOME"] = "succeeded"
+        self.assertIn("usage 2200 total", self.cli("report")[1])
+
+    def test_a_dispatch_without_exactly_one_session_file_is_recorded_unmeasured(self):
+        for count, name in ((0, "none"), (2, "twice")):
+            os.environ["FAKE_ORCA_DISPATCH"] = name
+            self.assertEqual(self.dispatch(front=f"budget: [tokens={2000 + count}]\n")[0], 0)  # a contract of its own
+            mine = [path for path in self.transcripts().glob("*.jsonl") if f"ctx_{name}" in path.read_text(encoding="utf-8")]
+            if count == 0:
+                mine[0].unlink()
+            else:
+                shutil.copy(mine[0], mine[0].with_name("copy.jsonl"))
+            os.environ["FAKE_ORCA_OUTCOME"] = "succeeded"
+            output = self.cli("report")[1]
+            self.assertIn(f"ctx_{name}: budget {2000 + count} total, usage unmeasured (claude: ", output)
+            self.assertIn(f"{count} session files", output)
+
+    def test_an_orca_answer_without_the_fields_settles_nothing(self):
+        self.assertEqual(self.dispatch(front="budget: [tokens=2000]\n")[0], 0)
+        answers = (
+            ({"FAKE_ORCA_SHOW": "lacks", "FAKE_ORCA_OUTCOME": "succeeded"}, "lacks worker.worktreeId"),
+            ({"FAKE_ORCA_OUTCOME": "no answer"}, "is missing or refused"),
+        )
+        for answer, said in answers:
+            with mock.patch.dict(os.environ, answer):
+                output = self.cli("report")[1]
+            self.assertIn(f"ctx_test: not settled, Orca's answer {said}", output)
+            self.assertIn("usage unsettled", output)
+            self.assertNotIn("token_usage", self.ledger()[1])
 
     def test_a_new_worktree_in_the_masters_own_repository_starts_from_its_local_branch(self):
         self.git(self.work, "init", "-q")
