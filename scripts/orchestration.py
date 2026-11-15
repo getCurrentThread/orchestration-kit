@@ -240,11 +240,16 @@ def unsettled_dispatch(earlier: list[str]) -> tuple[str, object] | None:
 
     A second worker on one contract, or on one task, repeats the first one's edits in the same files. It is
     asked for most often after an Orca restart, when the first worker's report is missing and its work is not.
-    Only a settled outcome clears a dispatch: no answer about it, or an outcome this code does not know,
-    leaves it held.
+    Only a settled outcome clears a dispatch, and so does Orca's `dispatch_not_found` (as `settle` reads it): after an
+    `orca orchestration reset` Orca knows none of the old dispatches, and holding them would refuse a follow-up and a
+    second dispatch of the contract for ever. No answer about it, another refusal, or an outcome this code does not
+    know, leaves it held.
     """
     for dispatch_id in dict.fromkeys(reversed(earlier)):
-        shown = orca_result("orchestration", "worker-show", "--dispatch", dispatch_id, "--full") or {}
+        answer = orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full")
+        if pluck(answer, "error", "code") == "dispatch_not_found":
+            continue
+        shown = (answer.get("result") if answer.get("ok") else None) or {}
         projection = shown.get("projection")
         outcome = projection.get("outcome") if isinstance(projection, dict) else None
         if outcome not in SETTLED:
@@ -844,10 +849,19 @@ def watch(args: argparse.Namespace) -> int:
                     waits = f" Orca sees it parked on a prompt that only a human can answer: {json.dumps(parked)[:200]}." if parked else ""
                     if worker["outcome"] != "in_progress":
                         waits += f" Orca gives it the outcome {worker['outcome']!r}, which this watch does not know and reads as open."
+                    # Read only: resume itself proves the ending again before it types anything.
+                    tail = pluck(orca_result("terminal", "read", "--terminal", worker["terminal"]), "terminal", "tail")
+                    ended = isinstance(tail, list) and all(isinstance(line, str) for line in tail) and ended_session(tail)
+                    step = (
+                        f"The agent has ended and its terminal is kept (Claude's resume line, then a shell prompt): run "
+                        f"ORCHESTRATION resume --dispatch {dispatch_id}"
+                        if ended else
+                        f"Look at it: {next_step(worker) or f'orca orchestration worker-read --dispatch {dispatch_id}'}"
+                    )
                     wake.append(
                         f"watch: dispatch {dispatch_id} is open and its worker's screen in {worker['terminal']} has not "
                         f"changed for {int(now - quiet_since[dispatch_id])} s (activity {activity}, liveness {liveness}).{restarted}{waits} "
-                        f"Look at it: {next_step(worker) or f'orca orchestration worker-read --dispatch {dispatch_id}'}"
+                        f"{step}"
                     )
             if not workers and not unread:
                 # Orca closes a finished worker by itself, unless it names a step for it: a terminal to release.
@@ -1102,7 +1116,13 @@ def start(args: argparse.Namespace) -> int:
 
 
 def succeed(args: argparse.Namespace) -> int:
-    problem = launch_problem(args.model) or top_tier_problem(args.model, args.effort)
+    if args.model:
+        problem = launch_problem(args.model) or top_tier_problem(args.model, args.effort or "")
+        if not problem and not args.effort:
+            problem = "pass --effort with --model"
+    else:
+        # As `start`: the owner's default model. Orca takes --effort only with --model.
+        problem = "--effort needs --model: leave both out to keep the owner's default model" if args.effort else None
     if problem:
         return fail(problem)
     handoff = Path(args.handoff).resolve()
@@ -1124,8 +1144,9 @@ def succeed(args: argparse.Namespace) -> int:
     )
     if not workspace_known():
         return 2
+    chosen = ["--model", launch_model("claude", args.model), "--effort", args.effort] if args.model else []
     launch = run([
-        orca(), "agent", "launch", "--agent", "claude", "--model", launch_model("claude", args.model), "--effort", args.effort,
+        orca(), "agent", "launch", "--agent", "claude", *chosen,
         # A master dispatches from a terminal's handle. Without this, the owner's Chat | CLI setting decides.
         "--surface", "terminal", "--prompt", kickoff, "--json",
     ])
@@ -1513,10 +1534,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    def launch_options(sub: argparse.ArgumentParser, model_required: bool) -> None:
+    def launch_options(sub: argparse.ArgumentParser, model_required: bool, effort_required: bool = True) -> None:
         model_help = "a family listed in config/model-tier-policy.json, or a full id of that family to pin a version"
         sub.add_argument("--model", required=model_required, help=model_help)
-        sub.add_argument("--effort", required=True, choices=("low", "medium", "high", "xhigh"))
+        sub.add_argument("--effort", required=effort_required, choices=("low", "medium", "high", "xhigh"))
 
     sub = commands.add_parser("prepare", help="register a project directory in Orca and give it the repository harness")
     sub.add_argument("directory", help="the project's root; a new folder is made when its parent exists")
@@ -1564,7 +1585,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub = commands.add_parser("succeed", help="launch a successor master from a handoff document")
     sub.add_argument("--handoff", required=True)
-    launch_options(sub, model_required=True)
+    launch_options(sub, model_required=False, effort_required=False)  # both left out: the owner's default model, as `start`
     sub.add_argument("--run", help="Orca Run id the successor should take over")
     sub.set_defaults(handler=succeed)
 

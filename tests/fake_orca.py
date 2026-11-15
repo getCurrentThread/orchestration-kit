@@ -99,9 +99,13 @@ elif command == "orchestration worker-show":
     outcome = os.environ.get("FAKE_ORCA_OUTCOME", "in_progress")
     if outcome == "no answer":  # not "": Windows drops a variable that is set to nothing
         sys.exit(1)
-    if outcome == "unknown dispatch":  # an id that Orca never had, or has lost to a reset
+    # An id that Orca never had, or has lost to a reset; FAKE_ORCA_FRESH names a dispatch started after it, which Orca knows.
+    if outcome == "unknown dispatch" and dispatch != "ctx_" + os.environ.get("FAKE_ORCA_FRESH", ""):
         error = {"code": "dispatch_not_found", "message": f"Worker Dispatch {dispatch} was not found."}
         print(json.dumps({"ok": False, "error": error}))
+        sys.exit(1)
+    if outcome == "other refusal":  # an answer that is neither a dispatch nor dispatch_not_found
+        print(json.dumps({"ok": False, "error": {"code": "invalid_argument", "message": "no"}}))
         sys.exit(1)
     dispatched = Path(os.environ["FAKE_ORCA_LOG"] + ".dispatched")
     result = {
@@ -159,7 +163,10 @@ elif command in ("repo list", "repo add"):
         result = {"repo": repo}
 elif command == "terminal read":
     # An ended agent: Claude's line on exit, with the session id of the worker the fake last started, and a prompt.
-    session = Path(os.environ["FAKE_ORCA_LOG"] + ".session").read_text(encoding="utf-8")
+    if os.environ.get("FAKE_ORCA_READ") == "no answer":
+        sys.exit(1)
+    kept = Path(os.environ["FAKE_ORCA_LOG"] + ".session")  # a watch test starts no worker
+    session = kept.read_text(encoding="utf-8") if kept.exists() else str(uuid.uuid4())
     ended = [
         "This session resumes only with the environment variable CLAUDE_CODE_EXPERIMENTAL_CODE_MODE equal to 1",
         "Resume this session with:",
