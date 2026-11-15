@@ -74,8 +74,8 @@ there, on the owner's default model. It writes nothing into the folder.
    - Exit 0, `"stage": "register"`: the worker runs and is recorded. `dispatch` and `run` are the ids the
      commands below take, `workspace` is the folder the worker runs in, and `task_attempt` says which
      attempt at its task this is. Do what `next` says: keep a watch running, then end your turn.
-   - Exit 2 with only an `orchestration: ...` line, or at `"stage": "prepare"` or `"check"`: refused before
-     anything was started, and no worker exists. Fix what the line says and dispatch again.
+   - Exit 2 with only an `orchestration: ...` line, or at `"stage": "prepare"`, `"check"` or `"budget"`: refused
+     before anything was started, and no worker exists. Fix what the line says and dispatch again.
    - `CONTRACT_ALREADY_RUNNING` or `TASK_ALREADY_RUNNING`: an earlier dispatch is not settled, and no second
      worker was started. To change what that worker does, `send` to the dispatch the line names; see
      "After an Orca restart" when only its report is missing. An `outcome` other than `in_progress` is no
@@ -170,12 +170,19 @@ a repeated wake is the whole answer, not an error.
 
 - `... are unread and Orca has not woken you`: read the mail with the command the line names.
 - `... is open and its worker's screen ... has not changed for ...`: the worker has most likely stopped
-  without a report. Read its screen with the command the line names. If it is back at its prompt, see
-  "After an Orca restart". Only if the screen shows it still at work, start the watch again with a longer
-  `--stalled-after <seconds>`. `liveness unverifiable` is no stall by itself. When the line adds
-  `parked on a prompt that only a human can answer`, the worker is healthy and waits for an approval or a
-  login: tell the owner what it asks, and do not answer it through its terminal. When it adds an outcome
-  `which this watch does not know`, look at the dispatch and tell the owner that the watch needs that name.
+  without a report. Read its screen with the command the line names. If it is back at its prompt with its agent
+  alive, see "After an Orca restart"; if the agent has ended, see the next bullet. Only if the screen shows it
+  still at work, start the watch again with a longer `--stalled-after <seconds>`. `liveness unverifiable` is no
+  stall by itself. When the line adds `parked on a prompt that only a human can answer`, the worker is healthy
+  and waits for an approval or a login: tell the owner what it asks, and do not answer it through its terminal.
+  When it adds an outcome `which this watch does not know`, look at the dispatch and tell the owner that the
+  watch needs that name.
+- The screen shows that the agent has ended (Claude's `Resume this session with:` line, then a shell prompt):
+  run `ORCHESTRATION resume --dispatch <id>`, then start the watch again. The worker's own session comes back
+  in its terminal and is told to go on, for the same dispatch: no new dispatch, no ledger line, no attempt
+  used. A refusal (exit 2) starts nothing and says what to do: an agent that may still run is never resumed,
+  nor is a worker that has settled or is not Claude. Where the terminal is gone, Orca has failed the
+  dispatch and nothing brings it back: dispatch the task again with `--follows`, as before.
 - `... has settled and its mail is read`: nothing is left to wait for. What the workers reported is still
   yours to review and merge. A line that names a command for a settled dispatch (`Orca names a next step`,
   `Orca keeps its terminal open`) is for after that: run the command only once you no longer need that
@@ -214,6 +221,9 @@ a repeated wake is the whole answer, not an error.
   make the fixes yourself unless the owner gave that work to you.
 - `orca orchestration send --to dispatch:<id> --subject "<topic>" --body "<message>"` is for a worker that
   is still working: it gets the message when its current turn ends.
+- Before a `send` to a worker that has gone quiet, look at its dispatch (`orca orchestration worker-show
+  --dispatch <id>`). To one whose agent has ended it is kept as mail and reaches nobody until the session runs
+  again; to one whose terminal is gone, which Orca shows as `failed`, it starts a fresh worker no gate has checked.
 - Stop after the third failed attempt at one task, whether the worker failed or its result was rejected,
   and tell the owner what was tried and why each attempt fell short: the contract or the task is what
   needs to change. The wrapper refuses a fourth (`TASK_ATTEMPTS_EXHAUSTED`). Do not get round it by leaving
@@ -235,7 +245,7 @@ the restart.
 - A worker that finished while Orca was down could not send anything: its dispatch is open, no report came,
   and its screen shows the report it could not send.
 - In both cases the work is done and only the report is missing. Never dispatch the contract again. Ask
-  the worker to send it again:
+  the worker to send it again; this `send` is for a worker whose agent still runs:
 
   ```text
   orca orchestration send --to dispatch:<id> --subject "Send worker_done again" --body "Orca was restarted and did not take your worker_done. Do not redo any work and change no file. Send the same worker_done again."

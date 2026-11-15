@@ -3,6 +3,14 @@
 `worktree current`, `agent launch` and the two answers of `status` while the app is closed were measured on 1.4.258.
 `worker-show`'s `result.worker.worktreeId`, `result.worker.startOptions.agent` and `result.dispatch.dispatchedAt`
 (UTC, "YYYY-MM-DD HH:MM:SS") were measured on 1.4.259.
+
+Measured on 1.4.259 on 2026-11-15, for `resume`: `worker-show` of a worker whose agent ended with its terminal kept
+(`projection.liveness` {verdict: unverifiable, reason: missing_status}, `worker.agentTerminalHandle`, `dispatch.runId`) and of
+a healthy one (verdict live); `worker-show` of an id that never existed (ok false, error.code dispatch_not_found, exit 1);
+`terminal read` (`result.terminal`: handle, status, tail as a list of lines), of an ended agent (Claude's resume line and a shell
+prompt end the tail) and of a released terminal (status exited, empty tail); `terminal send` (`result.send.accepted`) and, to a
+closed terminal, ok false with error.code terminal_not_writable; `terminal wait --for tui-idle` (`result.wait.satisfied`) and, on
+timeout, ok false with error.code timeout; `orchestration send --to dispatch:<id>` (`result.messageId`).
 """
 
 import json
@@ -10,6 +18,7 @@ import os
 import re
 import sys
 import time
+import uuid
 from pathlib import Path
 
 arguments = sys.argv[1:]
@@ -73,8 +82,10 @@ if command == "orchestration worker-start":
         prompt = {"type": "user", "isSidechain": False, "message": {"role": "user", "content": f"You are a dispatched worker. Your Dispatch ID is ctx_{name}"}}
         usage = {"input_tokens": 1000, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 700, "output_tokens": 300}
         entry = {"type": "assistant", "isSidechain": False, "message": {"id": "msg_1", "model": model, "usage": usage}}
-        # A file of its own per worker, as a real session writes: the wrapper reads the one born after the dispatch.
-        (transcripts / f"worker-{time.time_ns()}.jsonl").write_text(json.dumps(prompt) + "\n" + json.dumps(entry) + "\n", encoding="utf-8")
+        # A file of its own per worker, named by its session id as Claude Code names it: the wrapper reads the one born after the dispatch.
+        session = str(uuid.uuid4())
+        Path(os.environ["FAKE_ORCA_LOG"] + ".session").write_text(session, encoding="utf-8")
+        (transcripts / f"{session}.jsonl").write_text(json.dumps(prompt) + "\n" + json.dumps(entry) + "\n", encoding="utf-8")
     name = os.environ.get("FAKE_ORCA_DISPATCH", "test")
     result = {
         "state": "ready",
@@ -88,17 +99,30 @@ elif command == "orchestration worker-show":
     outcome = os.environ.get("FAKE_ORCA_OUTCOME", "in_progress")
     if outcome == "no answer":  # not "": Windows drops a variable that is set to nothing
         sys.exit(1)
+    if outcome == "unknown dispatch":  # an id that Orca never had, or has lost to a reset
+        error = {"code": "dispatch_not_found", "message": f"Worker Dispatch {dispatch} was not found."}
+        print(json.dumps({"ok": False, "error": error}))
+        sys.exit(1)
     dispatched = Path(os.environ["FAKE_ORCA_LOG"] + ".dispatched")
     result = {
-        "dispatch": {"id": "ctx_test", "taskId": "task_test", "status": "dispatched", "dispatchedAt": dispatched.read_text(encoding="utf-8") if dispatched.exists() else "2000-01-01 00:00:00"},
-        "worker": {"dispatchId": dispatch, "worktreeId": f"00000000::{folder}", "startOptions": {"agent": os.environ.get("FAKE_ORCA_AGENT", "claude")}},
-        "projection": {"dispatchId": dispatch, "outcome": outcome},
+        "dispatch": {"id": "ctx_test", "taskId": "task_test", "runId": "run_test", "status": "dispatched", "dispatchedAt": dispatched.read_text(encoding="utf-8") if dispatched.exists() else "2000-01-01 00:00:00"},
+        "worker": {
+            "dispatchId": dispatch, "worktreeId": f"00000000::{folder}", "agentTerminalHandle": f"term_worker_{dispatch}",
+            "startOptions": {"agent": os.environ.get("FAKE_ORCA_AGENT", "claude")},
+        },
+        "projection": {"dispatchId": dispatch, "outcome": outcome, "liveness": {"verdict": os.environ.get("FAKE_ORCA_LIVENESS", "live")}},
         # Orca leaves the field out when it did not look, and gives null when it looked and found no wait. The
         # shape is from `orca orchestration worker-show --help`: no parked worker was there to measure.
         "observation": {"agentWait": {"evidence": "prompt-text"} if dispatch in frame().get("parked", []) else None},
     }
     if os.environ.get("FAKE_ORCA_SHOW") == "lacks":  # an answer without the fields the usage is found by
         del result["worker"]["worktreeId"]
+    for path in filter(None, os.environ.get("FAKE_ORCA_WITHOUT", "").split(",")):  # dotted paths a test takes out
+        *parents, last = path.split(".")
+        holder = result
+        for key in parents:
+            holder = holder[key]
+        del holder[last]
 elif command == "orchestration dispatch-show":
     result = {"dispatch": {"id": "ctx_test", "task_id": "task_test", "status": "dispatched"}}
 elif command == "agent launch":
@@ -133,6 +157,34 @@ elif command in ("repo list", "repo add"):
         if repo not in repos:
             kept.write_text(json.dumps(repos + [repo]), encoding="utf-8")
         result = {"repo": repo}
+elif command == "terminal read":
+    # An ended agent: Claude's line on exit, with the session id of the worker the fake last started, and a prompt.
+    session = Path(os.environ["FAKE_ORCA_LOG"] + ".session").read_text(encoding="utf-8")
+    ended = [
+        "This session resumes only with the environment variable CLAUDE_CODE_EXPERIMENTAL_CODE_MODE equal to 1",
+        "Resume this session with:",
+        "claude --dangerously-skip-permissions --model claude-haiku-5-5 --effort low --resume {session}",
+        f"PS {folder}>",
+    ]
+    tail = json.loads(os.environ["FAKE_ORCA_TAIL"]) if "FAKE_ORCA_TAIL" in os.environ else ended
+    tail = [line.replace("{session}", session) for line in tail]
+    result = {"terminal": {
+        "handle": option("--terminal"), "status": "running", "tail": tail, "truncated": False, "limited": False,
+        "oldestCursor": "0", "nextCursor": str(len(tail)), "latestCursor": str(len(tail)), "returnedLineCount": len(tail), "source": "stream",
+    }}
+elif command == "terminal send":
+    if os.environ.get("FAKE_ORCA_SEND") == "refused":  # to a closed terminal, as measured
+        print(json.dumps({"ok": False, "error": {"code": "terminal_not_writable", "message": "terminal_not_writable"}}))
+        sys.exit(1)
+    prompt = {"stages": ["input_accepted"], "provider": "claude", "observation": "supported"}
+    result = {"send": {"handle": option("--terminal"), "accepted": True, "bytesWritten": len(option("--text")) + 1, "prompt": prompt}, "mutation": {"replayed": False}}
+elif command == "terminal wait":
+    if os.environ.get("FAKE_ORCA_IDLE") == "never":  # what a wait that ran out of time answers, as measured
+        print(json.dumps({"ok": False, "error": {"code": "timeout", "message": "timeout"}}))
+        sys.exit(1)
+    result = {"wait": {"handle": option("--terminal"), "condition": option("--for"), "satisfied": True, "status": "running", "exitCode": None}}
+elif command == "orchestration send":
+    result = {"messageId": "msg_test"}
 elif command == "terminal list":
     handles = os.environ.get("FAKE_ORCA_TERMINALS", "term_new").split(",")
     result = {"terminals": [{"handle": handle} for handle in handles], "totalCount": len(handles), "truncated": False}

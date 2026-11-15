@@ -12,6 +12,8 @@ Runs and mail. The plugin adds:
 - **Project directories made ready**: `dispatch --project <directory>` adds the directory to Orca and
   installs the repository harness before the worker starts, without overwriting anything.
 - **A wait that survives an Orca restart**: a read-only `watch` that wakes the master when Orca does not.
+- **Resume a worker whose agent ended**: `resume --dispatch <id>` brings the Claude session back in the worker's
+  own terminal, once the screen proves the agent ended, and it reports for the same dispatch.
 - **Master succession**: a checked handoff, a successor launched in Orca, and a lineage ledger.
 - **Review workflow**: `/orchestration-kit:orchestration-review` fans a diff out to reviewers and verifies
   every blocking finding.
@@ -45,7 +47,7 @@ fresh master in an Orca terminal on the same checkout (`start`). The `orchestrat
 
 | Piece | Path |
 |---|---|
-| Wrapper (`prepare`, `dispatch`, `watch`, `start`, `succeed`, `inherit`, `report`) | `scripts/orchestration.py` |
+| Wrapper (`prepare`, `dispatch`, `watch`, `resume`, `start`, `succeed`, `inherit`, `report`) | `scripts/orchestration.py` |
 | Repository harness installer (`<repository root> [--dry-run]`) | `scripts/harness.py` |
 | Repository harness files | `harness/` |
 | Model families, tiers and caps | `config/model-tier-policy.json` |
