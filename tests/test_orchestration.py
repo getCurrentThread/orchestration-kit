@@ -376,13 +376,14 @@ class OrchestrationTest(unittest.TestCase):
                     decision.pop(field, None)
                 return code, decision
 
-            with self.subTest(field=field), mock.patch.object(orchestration, "gate", without):
-                code, output = self.dispatch()
-            self.assertEqual(code, 2, output)
-            line = json.loads(output.splitlines()[0])
-            self.assertEqual((line["stage"], line["allow"], line["reason"]), (stage, False, reason))
-            self.assertEqual(self.worker_starts(), [])  # refused with nothing started, not by an error after the start
-            self.assertFalse(any(row.get("job_id") for row in self.ledger()))
+            with self.subTest(field=field):
+                with mock.patch.object(orchestration, "gate", without):
+                    code, output = self.dispatch()
+                self.assertEqual(code, 2, output)
+                line = json.loads(output.splitlines()[0])
+                self.assertEqual((line["stage"], line["allow"], line["reason"]), (stage, False, reason))
+                self.assertEqual(self.worker_starts(), [])  # refused with nothing started, not by an error after the start
+                self.assertFalse(any(row.get("job_id") for row in self.ledger()))
 
     def test_a_worker_start_that_orca_refuses_registers_nothing(self):
         os.environ["FAKE_ORCA_START"] = "exit 1"
@@ -749,11 +750,12 @@ class OrchestrationTest(unittest.TestCase):
             ("not delivered", ("terminal term_launched", "(prompt outcome: 'rejected')", "orca terminal read --terminal term_launched --screen", "Do not run this again")),
         )
         for launch, said in refusals:
-            with self.subTest(launch=launch), mock.patch.dict(os.environ, {"FAKE_ORCA_LAUNCH": launch}):
-                code, output = self.cli("succeed", "--handoff", str(handoff))
-            self.assertEqual(code, 2, output)
-            for part in said:
-                self.assertIn(part, output)
+            with self.subTest(launch=launch):
+                with mock.patch.dict(os.environ, {"FAKE_ORCA_LAUNCH": launch}):
+                    code, output = self.cli("succeed", "--handoff", str(handoff))
+                self.assertEqual(code, 2, output)
+                for part in said:
+                    self.assertIn(part, output)
         code, output = self.cli("succeed", "--handoff", str(handoff))
         self.assertEqual(code, 0, output)
         line = json.loads(output)  # one line, and not Orca's raw answer
