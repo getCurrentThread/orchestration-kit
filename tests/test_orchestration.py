@@ -176,6 +176,25 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(len(self.worker_starts()), 2)
 
+    def test_a_dispatch_that_orca_lost_to_a_reset_holds_neither_a_contract_nor_a_follow_up(self):
+        self.assertEqual(self.dispatch()[0], 0)
+        fix = self.work / "contract-2.md"
+        fix.write_text(Path(self.contract()).read_text(encoding="utf-8") + "\nFix it.\n", encoding="utf-8")
+        follow = ["dispatch", "--contract", str(fix), "--agent", "claude", "--model", EFFICIENT, "--effort", "low", "--follows", "ctx_test"]
+        for held in ("no answer", "other refusal"):  # no answer, and a refusal with another code, still hold the dispatch
+            os.environ["FAKE_ORCA_OUTCOME"] = held
+            for code, output in (self.dispatch(), self.cli(*follow)):
+                self.assertEqual(code, 2, output)
+            self.assertEqual(len(self.worker_starts()), 1)
+        os.environ["FAKE_ORCA_OUTCOME"] = "unknown dispatch"  # as after `orca orchestration reset`
+        os.environ.update(FAKE_ORCA_DISPATCH="fix", FAKE_ORCA_FRESH="fix")
+        code, output = self.cli(*follow)
+        self.assertEqual(code, 0, output)
+        os.environ.update(FAKE_ORCA_DISPATCH="again", FAKE_ORCA_FRESH="again")
+        code, output = self.dispatch()
+        self.assertEqual(code, 0, output)  # a second dispatch of the first contract file
+        self.assertEqual(len(self.worker_starts()), 3)
+
     def test_a_retry_or_a_fix_is_one_more_attempt_at_the_task_it_follows(self):
         self.assertEqual(self.dispatch()[0], 0)
         fix = self.work / "contract-2.md"  # a new file, which the gate counts as a contract of its own
@@ -449,6 +468,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertNotIn("ctx_settled", output)
 
     def test_watch_names_a_worker_that_stopped_without_settling(self):
+        os.environ["FAKE_ORCA_TAIL"] = json.dumps(["Working (12s)"])  # an agent that still runs; the resume line is another test's
         output = self.watch([{"runtime": "one", "workers": {"ctx_test": "done"}, "unread": 0}], "--stalled-after", "0")
         self.assertIn("screen in term_ctx_test has not changed for 0 s (activity done, liveness live)", output)
         self.assertIn("Look at it: orca orchestration worker-read --dispatch ctx_test", output)
@@ -461,6 +481,21 @@ class OrchestrationTest(unittest.TestCase):
         output = self.watch(frames, "--stalled-after", "0")
         self.assertIn("the outcome 'cancelled', which this watch does not know and reads as open", output)
         self.assertNotIn("has settled", output)
+
+    def test_watch_names_resume_for_a_standing_screen_that_shows_the_resume_line(self):
+        frames = [{"runtime": "one", "workers": {"ctx_test": "unknown"}, "unread": 0}]
+        output = self.watch(frames, "--stalled-after", "0")  # the fake's default text ends with Claude's resume line and a prompt
+        self.assertIn("The agent has ended and its terminal is kept", output)
+        self.assertIn("ORCHESTRATION resume --dispatch ctx_test", output)
+        self.assertNotIn("worker-read", output)
+        shell = json.dumps(["Working (12s)", "PS C:\\work>"])  # a prompt without the resume line: the agent may still run
+        for environment in ({"FAKE_ORCA_TAIL": shell}, {"FAKE_ORCA_READ": "no answer"}):
+            with mock.patch.dict(os.environ, environment):
+                output = self.watch(frames, "--stalled-after", "0")
+            self.assertIn("Look at it: orca orchestration worker-read --dispatch ctx_test", output)
+            self.assertNotIn("resume --dispatch", output)
+        self.assertEqual(self.sends(), [])  # the watch typed nothing and started nothing
+        self.assertEqual(self.worker_starts(), [])
 
     def test_watch_reads_every_page_and_passes_on_the_step_orca_names(self):
         output = self.watch([
@@ -616,6 +651,27 @@ class OrchestrationTest(unittest.TestCase):
                 self.assertIn(said, output)
                 self.assertIn("Do not run resume again", output)
         self.assertNotIn(["orchestration", "send"], [call[:2] for call in self.orca_calls()])  # the session was not confirmed back
+
+    def test_succeed_keeps_the_owners_default_model_unless_one_is_named(self):
+        handoff = self.work / "handoff.md"
+        state = "## Role State\n\nCurrent Role: Maintenance\nRole Lock: DISABLED\nFrozen: none\nUnlock: none\n\n"
+        handoff.write_text(state + "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:]), encoding="utf-8")
+        code, output = self.cli("succeed", "--handoff", str(handoff))
+        self.assertEqual(code, 0, output)
+        launch = self.orca_calls()[-1]
+        self.assertEqual(launch[:2], ["agent", "launch"])
+        self.assertTrue(set(launch).isdisjoint({"--model", "--effort"}))  # as `start`: no model chosen by the kit
+        before = len(self.orca_calls())
+        for refused, says in (
+            (["--model", "unlisted-model", "--effort", "low"], "not listed"),  # with --model the checks stay
+            (["--model", TOP, "--effort", "high"], "medium"),
+            (["--effort", "low"], "--effort needs --model"),
+            (["--model", EFFICIENT], "pass --effort"),
+        ):
+            code, output = self.cli("succeed", "--handoff", str(handoff), *refused)
+            self.assertEqual(code, 2, output)
+            self.assertIn(says, output)
+        self.assertEqual(len(self.orca_calls()), before)
 
     def test_succeed_needs_every_handoff_section_before_launching(self):
         handoff = self.work / "handoff.md"

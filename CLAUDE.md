@@ -20,7 +20,10 @@ A Claude Code plugin for Windows. `README.md` describes it.
   is the one shipped here, leave a repository's own git hooks running, and never commit. Keep each of these
   when changing them.
   To measure against the live Orca, add a scratch folder and remove it again with
-  `orca project setup-delete --setup <id> --force` (`orca project setups --json` gives the id).
+  `orca project setup-delete --setup <id> --force` (`orca project setups --json` gives the id). A scratch Run is
+  left as it is and named in the report, never `orca orchestration reset` (it deletes every Run of the machine);
+  the Claude session logs of scratch workers are named in the report, never deleted; `/exit` or a path typed with
+  `orca terminal send` from Git Bash needs `MSYS_NO_PATHCONV=1`.
 - Every file is stored as written (`.gitattributes`: `* -text`). Keep LF line endings.
 - An install from GitHub gets a new copy only when `version` in `.claude-plugin/plugin.json` changes. Raise
   it with every change to `master` that those installs should receive.

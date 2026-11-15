@@ -170,8 +170,9 @@ a repeated wake is the whole answer, not an error.
 
 - `... are unread and Orca has not woken you`: read the mail with the command the line names.
 - `... is open and its worker's screen ... has not changed for ...`: the worker has most likely stopped
-  without a report. Read its screen with the command the line names. If it is back at its prompt with its agent
-  alive, see "After an Orca restart"; if the agent has ended, see the next bullet. Only if the screen shows it
+  without a report. Read its screen with the command the line names; when the line instead says the agent has
+  ended and names `ORCHESTRATION resume --dispatch <id>`, the screen showed the resume line: see the next bullet.
+  If it is back at its prompt with its agent alive, see "After an Orca restart"; if the agent has ended, see the next bullet. Only if the screen shows it
   still at work, start the watch again with a longer `--stalled-after <seconds>`. `liveness unverifiable` is no
   stall by itself. When the line adds `parked on a prompt that only a human can answer`, the worker is healthy
   and waits for an approval or a login: tell the owner what it asks, and do not answer it through its terminal.
@@ -193,6 +194,9 @@ a repeated wake is the whole answer, not an error.
 
 ## When a worker reports
 
+- Orca's mail "Worker stopped without reporting" also comes for a live worker whose turn ended without `worker_done`
+  (4 of 4 scratch workers, about 25 s after the turn ended; Orca 1.4.259, 2026-11-15), so it is no proof that the
+  agent ended: look at its screen, then `send` to a live one or `resume` an ended one.
 - Mail from a worker can be a question instead of a report, and the worker waits for the answer. Give it
   with `orca orchestration reply --id <msg_id> --body "<answer>"`, then start the watch again. An answer
   that changes what the contract says belongs in your report.
@@ -270,8 +274,9 @@ the owner that one is due, then write it.
 1. Fill in `handoff-template.md` and save it as `.orchestration/handoffs/<UTC timestamp>.md`. All eight
    sections are required: write `none` where there is nothing. `succeed` refuses a handoff the successor
    could not work from, and names the section.
-2. Run `ORCHESTRATION succeed --handoff <file> --model <family> --effort <level> --run <run_id>`.
-   `orca orchestration run-current --json` gives the Run id. A Run exists only once something was
+2. Run `ORCHESTRATION succeed --handoff <file> --run <run_id>`. `--model <family> --effort <level>` is left out to
+   keep the owner's default model, as `start` does (Orca takes `--effort` only with `--model`); name both only when
+   the owner asks for a model. `orca orchestration run-current --json` gives the Run id. A Run exists only once something was
    dispatched: leave `--run` out while it gives none.
 3. Stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner the
    successor is up, then stop working. Closing your terminal is the owner's decision.
