@@ -1,7 +1,7 @@
 # Upstream provenance
 
 - Source: https://github.com/baksohyeon/mogui-ADE-orchestrator
-- Commit: `dc56671287a5cf460a37a319e72d9e5fe9bc72df` (main, 2026-11-13)
+- Commit: `ed3b803a7d00063c886b0d0edfd3426c8eb6db02` (main, 2026-11-15, v0.5.345)
 - License: MIT, Copyright (c) 2026 baksohyeon (`LICENSE`). The review agents and workflow derive from ECC,
   MIT, Copyright (c) 2026 Affaan Mustafa, https://github.com/affaan-m/ECC (`LICENSE-ECC`).
 
@@ -9,12 +9,15 @@
 
 - `vendor/mogui/scripts/dispatch-gate` and `vendor/mogui/src/master_runtime/` (`__init__.py`,
   `core/__init__.py`, `core/dispatch_gate.py`, `core/dispatch_timeline.py`, `core/lineage.py`,
-  `core/watchdog.py`, `core/worker_reap.py`), at the same paths under upstream's root.
+  `core/token_budget.py`, `core/watchdog.py`, `core/worker_reap.py`), at the same paths under upstream's root.
 - `vendor/mogui/LICENSE` from `LICENSE`, and `vendor/mogui/LICENSE-ECC` from `vendor/ecc/LICENSE-ECC`.
 - `agents/silent-failure-hunter.md` from `.claude/agents/silent-failure-hunter.md`.
 
 `dispatch_timeline.py`, `worker_reap.py` and `watchdog.py` are present only because the gate imports them.
-Their process inspection code (`ps`, `lsof`, `/proc`) is never reached from the gate.
+Their process inspection code (`ps`, `lsof`, `/proc`, in `WorkerReaper`) is never reached from the gate: the
+gate reaches `worker_reap.py` only through `resolve_task_id_from_dispatch_id`, which asks Orca.
+`token_budget.py` is present because `scripts/dispatch-gate` imports it; nothing in `scripts/orchestration.py`
+uses it yet.
 
 To check a file: `git hash-object --no-filters <path here>` equals `git rev-parse <commit>:<upstream path>`
 in a clone of the source.
@@ -51,7 +54,7 @@ of `tests/fake_orca.py` and in `skills/master/SKILL.md`.
 | `inherit`: whether the predecessor's terminal is still open | `succession.py` (`detect_duplicate_instances`, `retire_predecessor`). Nothing is closed here: that stays the owner's decision |
 | `hooks/hooks.json` with `compacted` | `master-ops/scripts/compaction-probe.sh`. No recall quiz and no log |
 | `report` | `scripts/dispatch-gate report`, vendored: a pass-through, followed by every task with more than one attempt |
-| Two rules of `skills/master/`: a worker in its own workspace commits before it reports, and three failed attempts stop the retries | `master-ops/docs/runbooks/contract-conventions.md`, and `docs/en/resident-orchestrator-loop.md` of mogui-agent-harness |
+| Three rules of `skills/master/`: a worker in its own workspace commits before it reports, three failed attempts stop the retries, and a research, review or design report gives evidence for every verdict (`contract-template.md`) | `master-ops/docs/runbooks/contract-conventions.md`, and `docs/en/resident-orchestrator-loop.md` of mogui-agent-harness. The evidence rule is clause 17 of the runbook; the wording here is this repository's own |
 
 ## Not taken
 
@@ -74,20 +77,41 @@ Looked at again on 2026-11-13 and left out:
 - The four extra review agents: `code-simplifier` edits files, and the others repeat `code-reviewer` or
   apply to typed domain models.
 
+Looked at again on 2026-11-15 and left out (upstream pull requests in brackets):
+
+- Putting the work layer back after a compaction (#274, `compact-rehydration-hook.sh`): 612 lines of bash on
+  PostToolUse and UserPromptSubmit of every session. `hooks/hooks.json` here stays silent outside the master's
+  session, and `compacted` with the handoff covers the master.
+- `worker-reap` reclaiming by worktree and proving squash landings (#273, #295): it closes terminals and removes
+  worktrees, which stays the owner's decision here. The file is vendored only because the gate imports it.
+- The shared git directory as a writable root for Codex, git escalation events, the push destination in Codex
+  briefs (#294, #304) and pre-trusting Antigravity worktrees (#269): the one ledger found on this machine on
+  2026-11-15 holds Claude workers only, and workers never push here.
+- The minimum Orca version in the preflight (#300): the wrapper already refuses an Orca answer it cannot read.
+  Orca 1.4.259 was installed; upstream's minimum is 1.4.258.
+- `measure-model`, proving the model from the worker's session record (#278): left out by the owner's choice on
+  2026-11-15, when token budgets and resuming a worker were chosen instead.
+- What belongs to installing upstream's template: hook paths resolved from the workspace (#279), the place of
+  `instance-runtime.json` (#280), the headless-browser rule (#282), the research layout (#301) and the Grok
+  model ids. This project installs no `master-ops` template.
+
 ## Windows notes
 
 - Upstream tests `tests/test_dispatch_gate.py`, `tests/test_dispatch_gate_front_matter.py` and
-  `tests/test_lineage.py` at this commit: 150 passed, 10 skipped on Windows 11 with Python 3.14.5. The 10
-  skipped tests run extensionless scripts directly, which Windows cannot do. They need `pytest` and
-  `PYTHONPATH=<clone>/src;<clone>/tests`: the second folder holds the helper that skips those ten.
-- Those tests isolate state through `HOME`, which Windows ignores. Run them with `USERPROFILE` pointed at
-  an empty folder, or leftover tickets make one test fail with `AMBIGUOUS_TICKET`.
-- The gate's own ticket lock uses `fcntl` and is a no-op on Windows. `scripts/orchestration.py` serialises
-  gate calls with its own lock and always passes `--contract-sha` to `register`.
+  `tests/test_lineage.py` at this commit: 188 passed, 15 skipped on Windows 11 with Python 3.14.5 and pytest
+  9.2.0 (150 passed and 15 skipped, 32 passed, and 6 passed in the three files). Ten of the skipped tests run
+  extensionless scripts directly, which Windows cannot do; the other five need ledger file locking (3), symlinks
+  (1) or FIFO files (1). They need `pytest` (not in the system Python: use a virtual environment outside the
+  repository) and `PYTHONPATH=<clone>/src;<clone>/tests`: the second folder holds `windows_exec_surface.py`,
+  the helper that skips those ten.
+- Those tests isolate state through `HOME`, which Windows ignores. Run them with `USERPROFILE` pointed at a new,
+  empty folder for each run, or leftover tickets (under `.mogui` there) make a test fail with `AMBIGUOUS_TICKET`.
+- The gate's ticket lock and ledger lock use `fcntl` and are no-ops on Windows. `scripts/orchestration.py`
+  serialises gate calls with its own lock and always passes `--contract-sha` to `register`.
 
 ## Updating to a newer commit
 
 1. Clone the source into an empty scratch folder with `core.autocrlf=false`.
-2. Run the three test files above with `PYTHONPATH=<clone>/src;<clone>/tests` and an empty `USERPROFILE`.
-3. Copy the unmodified files again, re-apply the changes listed under "Modified copies", update the commit
-   above, and run `python -X utf8 -s -B -m unittest discover -s tests -v`.
+2. Run the three test files above with `PYTHONPATH=<clone>/src;<clone>/tests` and a new, empty `USERPROFILE`.
+3. Copy the unmodified files again (and any file the gate newly imports), re-apply the changes listed under
+   "Modified copies", update the commit above, and run `python -X utf8 -s -B -m unittest discover -s tests -v`.
