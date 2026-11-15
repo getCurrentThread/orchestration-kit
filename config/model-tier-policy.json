@@ -1,11 +1,11 @@
 {
-  "_docs": "Tier policy (v2) read by vendor/mogui/scripts/dispatch-gate and scripts/orchestration.py. Entries are model families, not versioned ids: an entry covers a model named exactly like it or containing it as a '-'-separated part, so a new model version needs no edit here. The gate and the ledger see the family; Orca gets the version the Claude Code CLI resolves that family to at dispatch time. A model that no entry covers cannot be dispatched. 'top' is capped at 2 workers per 24 hours; pass --tier-override REASON to exceed it.",
+  "_docs": "Tier policy (v2) read by vendor/mogui/scripts/dispatch-gate and scripts/orchestration.py. Entries are model families, not versioned ids: an entry covers a model named exactly like it or containing it as a '-'-separated part, so a new model version needs no edit here. The gate and the ledger see the family; Orca gets the version the Claude Code CLI resolves that family to at dispatch time. A model that no entry covers cannot be dispatched. 'top' is capped at 5 workers per 24 hours; pass --tier-override REASON to exceed it.",
   "version": 2,
   "runtimes": ["claude", "codex"],
   "tiers": {
     "top": ["opus"],
     "efficient": ["sonnet", "haiku", "gpt"]
   },
-  "fanout_caps": { "top": 2 },
+  "fanout_caps": { "top": 5 },
   "window_seconds": 86400
 }

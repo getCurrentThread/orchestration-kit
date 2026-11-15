@@ -102,7 +102,7 @@ leave `--model` out: the wrapper takes it from `~/.codex/config.toml`.
 | Long autonomous task (about 30 minutes or more) | `sonnet` | `xhigh` |
 | Re-run of a task whose sonnet/high result fell short | `opus` | `medium` only |
 
-Effort `max` and a model outside the policy are refused. The top tier is capped at 2 dispatches per 24
+Effort `max` and a model outside the policy are refused. The top tier is capped at 5 dispatches per 24
 hours; `--tier-override "<reason>"` passes one more, only when the owner agrees. The dispatch line's
 `warnings` say when the model the worker really runs on could not be read (`MODEL_UNVERIFIED`,
 `MODEL_PROBE_FAILED`) or is another one of the declared tier or a lower one (`MODEL_MISMATCH`): tell the
