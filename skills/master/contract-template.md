@@ -2,7 +2,6 @@
 tier: efficient
 runtime: claude
 repo: REPOSITORY-OR-FOLDER-NAME
-budget: [rounds=3]
 writes: [PATH-THE-WORKER-MAY-EDIT]
 ---
 
@@ -14,8 +13,9 @@ Front matter rules (checked by the dispatch gate; a malformed block is refused):
 - Required: tier (the model's tier in config/model-tier-policy.json), runtime (claude or codex), repo
   (the repository's or the folder's name, as you would call it: the ledger records it and nothing is
   compared with it).
-- Optional: budget (rounds=N, hours=N, cost_usd=N.N, tokens=N), tokens_basis (total, the default, or uncached: input
-  without cache reads, plus output; it says how tokens=N is counted) and writes. Do not add other keys.
+- Optional: budget (only tokens=N is measured; rounds=N, hours=N and cost_usd=N.N are recorded and nothing acts on them),
+  tokens_basis (total, the default, or uncached: input without cache reads, plus output; it says how tokens=N is
+  counted) and writes. Do not add other keys.
 Delete this comment before dispatching.
 -->
 

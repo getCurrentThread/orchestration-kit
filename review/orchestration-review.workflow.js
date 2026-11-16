@@ -1,7 +1,7 @@
 export const meta = {
   name: 'orchestration-review',
   description:
-    'ECC Review phase as a native Claude Code workflow: multi-dimension review (quality + language + silent failures) then adversarial verification of every CRITICAL/HIGH finding. Returns blocking + advisory findings for Gate 2.',
+    'ECC Review phase as a native Claude Code workflow: multi-dimension review (quality + silent failures, and the task contract when one is named) then adversarial verification of every CRITICAL/HIGH finding. Returns blocking + advisory findings for Gate 2.',
   phases: [
     { title: 'Review', detail: 'one reviewer agent per dimension, in parallel' },
     { title: 'Verify', detail: 'adversarially refute each CRITICAL/HIGH finding' }
@@ -13,11 +13,10 @@ export const meta = {
 // the main conversation; this script owns only the autonomous, fan-out-heavy
 // review+verify segment between the two human gates.
 //
-// Caller contract — pass `args` (the main loop writes the diff to a file and names the language):
+// Caller contract — pass `args` (the main loop writes the diff to a file):
 //   {
 //     diffFile:  string,  // absolute path of a file holding the unified diff to review (required)
 //     diffLines: number,  // how many lines that file has, `wc -l` (required, at least 1)
-//     language?: string,  // e.g. "typescript" — selects a language reviewer
 //     contractFile?: string,  // absolute path of the task contract the change was made for — adds the contract reviewer
 //   }
 // The diff travels as a file, not as text: a script cannot read files, and a caller that pastes a
@@ -36,28 +35,6 @@ export const meta = {
 //     contract: { requirement, status, evidence }[] | null,  // every requirement of the contract; null without contractFile
 //     stats: { dimensions, failed, raw, unique, confirmed, unverified, uncertain, refuted } }
 // ---------------------------------------------------------------------------
-
-// Language → locally vendored reviewer agent map.
-const LANGUAGE_REVIEWER = {
-  typescript: 'orchestration-kit:code-reviewer',
-  javascript: 'orchestration-kit:code-reviewer',
-  python: 'orchestration-kit:code-reviewer',
-  go: 'orchestration-kit:code-reviewer',
-  rust: 'orchestration-kit:code-reviewer',
-  java: 'orchestration-kit:code-reviewer',
-  kotlin: 'orchestration-kit:code-reviewer',
-  swift: 'orchestration-kit:code-reviewer',
-  php: 'orchestration-kit:code-reviewer',
-  csharp: 'orchestration-kit:code-reviewer',
-  fsharp: 'orchestration-kit:code-reviewer',
-  react: 'orchestration-kit:code-reviewer',
-  vue: 'orchestration-kit:code-reviewer',
-  flutter: 'orchestration-kit:code-reviewer',
-  dart: 'orchestration-kit:code-reviewer',
-  django: 'orchestration-kit:code-reviewer',
-  fastapi: 'orchestration-kit:code-reviewer',
-  cpp: 'orchestration-kit:code-reviewer'
-};
 
 // A reviewer agent must emit findings in this shape — validated at the tool layer.
 const FINDINGS_SCHEMA = {
@@ -215,11 +192,9 @@ const contractFile = input.contractFile;
 
 // Build the review dimensions immutably. Quality and silent failures always run:
 // the script cannot see the diff, so it cannot decide that one of them is not needed.
-// The language reviewer is conditional, spread in rather than pushed onto a shared array.
-const langReviewer = input.language && LANGUAGE_REVIEWER[String(input.language).toLowerCase()];
+// The contract reviewer is conditional, spread in rather than pushed onto a shared array.
 const dimensions = [
   { key: 'quality', label: 'correctness & quality', agentType: 'orchestration-kit:code-reviewer' },
-  ...(langReviewer ? [{ key: `lang:${input.language}`, label: `${input.language} idioms & pitfalls`, agentType: langReviewer }] : []),
   // Named for what it reviews. Security is part of `quality`: the code-reviewer agent covers it.
   { key: 'silent-failures', label: 'silent-failure and error-path risk review', agentType: 'orchestration-kit:silent-failure-hunter' },
   // The other reviewers see the diff only: a change that is clean and does not do what was asked passes them.

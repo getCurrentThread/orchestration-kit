@@ -100,11 +100,6 @@ If the PR is not found, stop with an error.
 wc -l < <DIFF>     # <LINES>
 ```
 
-Then derive `language` from the dominant changed-file extension (for example
-`.ts`/`.tsx` to `typescript`, `.py` to `python`, `.go` to `go`). Leave it unset
-when the change is mixed or non-code — the workflow simply skips the
-language-specific reviewer.
-
 ## Phase 2 — INVOKE
 
 Call the Workflow tool. The workflow fails closed: it throws without `diffFile`
@@ -118,15 +113,13 @@ Workflow({
   args: {
     diffFile: "<absolute path of <DIFF>>",   // required
     diffLines: <LINES>,                      // required, from `wc -l`
-    language: "typescript",                  // optional
     contractFile: "<absolute path of the contract>"   // only with --contract
   }
 })
 ```
 
-The workflow fans out reviewers in parallel (quality, silent failures, the
-language's reviewer when `language` is set, and the contract reviewer when
-`contractFile` is set), dedups findings on the normalized evidence snippet, and
+The workflow fans out reviewers in parallel (quality, silent failures, and the
+contract reviewer when `contractFile` is set), dedups findings on the normalized evidence snippet, and
 runs an adversarial verifier on every unique CRITICAL/HIGH finding. A
 requirement the contract reviewer finds unmet is a HIGH finding. It returns:
 

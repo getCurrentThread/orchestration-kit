@@ -85,6 +85,9 @@ there, on the owner's default model. It writes nothing into the folder.
    - Exit 2 at `"stage": "register"`: the worker runs but was not accepted, for example
      `MODEL_TIER_ESCALATION` (it runs on a higher tier than declared). Stop it with
      `orca orchestration worker-stop --dispatch <id>` and tell the owner.
+   - `Orca reported the start as done` (exit 2, Orca's answer printed): a worker may be running that no ledger row
+     holds. Find it with `orca orchestration run-current --json`, then `orca orchestration worker-list --run <run>`,
+     and do not dispatch the contract again before you have.
    - `worker-start failed`: do not rerun it. Load Orca's recovery guide and read `failedStage` first.
 
 ### Models and effort
@@ -277,7 +280,10 @@ the owner that one is due, then write it.
 2. Run `ORCHESTRATION succeed --handoff <file> --run <run_id>`. `--model <family> --effort <level>` is left out to
    keep the owner's default model, as `start` does (Orca takes `--effort` only with `--model`); name both only when
    the owner asks for a model. `orca orchestration run-current --json` gives the Run id. A Run exists only once something was
-   dispatched: leave `--run` out while it gives none.
+   dispatched: leave `--run` out while it gives none. Exit 0 with `"stage": "succeed"` names the successor's `terminal`.
+   No terminal named (exit 2): look with `orca terminal list --worktree path:<folder> --json` before a second run,
+   which could start a second successor. A terminal named and the kickoff not delivered (exit 2): read its screen
+   with `orca terminal read --terminal <handle> --screen`, and do not run `succeed` again.
 3. Stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner the
    successor is up, then stop working. Closing your terminal is the owner's decision.
 

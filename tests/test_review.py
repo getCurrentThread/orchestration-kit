@@ -44,14 +44,19 @@ class ReviewWorkflowTest(unittest.TestCase):
         return json.loads(done.stdout)
 
     def test_a_clean_diff_is_approved_by_reviewers_that_read_the_file(self):
-        out = self.review({**DIFF, "language": "python"})
+        out = self.review(DIFF)
         self.assertEqual(out["result"]["verdict"], "APPROVE")
         # An approval without a finding shows that the diff was read, with no look into the journal.
-        self.assertEqual(out["result"]["read"], {"diffLines": 4321, "quality": 4321, "lang:python": 4321, "silent-failures": 4321})
-        self.assertEqual([sent["label"] for sent in out["prompts"]], ["review:quality", "review:lang:python", "review:silent-failures"])
+        self.assertEqual(out["result"]["read"], {"diffLines": 4321, "quality": 4321, "silent-failures": 4321})
+        self.assertEqual([sent["label"] for sent in out["prompts"]], ["review:quality", "review:silent-failures"])
         for sent in out["prompts"]:
             self.assertIn("The diff is the file C:/work/review.diff", sent["prompt"])
             self.assertNotIn("4321", sent["prompt"])  # a reviewer that is told the count can repeat it unread
+
+    def test_a_caller_that_still_passes_a_language_gets_the_review_of_one_that_does_not(self):
+        plain = self.review(DIFF)
+        for language in ("python", "typescript", "klingon"):
+            self.assertEqual(self.review({**DIFF, "language": language}), plain)
 
     def test_a_blocking_finding_goes_to_a_verifier_that_reads_the_same_file(self):
         out = self.review(DIFF, {"review:quality": FOUND, "verify:": {"isReal": True, "confidence": 0.9, "reasoning": "r"}})

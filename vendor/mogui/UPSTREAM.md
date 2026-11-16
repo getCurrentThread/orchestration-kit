@@ -26,13 +26,13 @@ in a clone of the source.
 
 | Path here | Upstream path | Changes |
 |---|---|---|
-| `review/orchestration-review.workflow.js` | `.claude/workflows/orch-review.workflow.js` | Workflow name and error prefixes renamed. Agent types use the plugin namespace (`orchestration-kit:code-reviewer`, `orchestration-kit:silent-failure-hunter`). Both `agent()` calls set `model: 'sonnet'` and `effort: 'medium'`. Two comments reworded. The diff travels as a file whose length each reviewer must reach. With `contractFile`, a fourth reviewer reads the task contract beside the diff and lists every requirement as met, unmet or unjudged; an unmet one is a HIGH finding, and a reviewer that names no requirement counts as failed. |
-| `commands/orchestration-review.md` | `.claude/commands/orch-review.md` | Command name, description and intro reworded. `scriptPath` points at `${CLAUDE_PLUGIN_ROOT}/review/orchestration-review.workflow.js`. Branch Mode, `--in <directory>` and `--contract <file>` are added. |
+| `review/orchestration-review.workflow.js` | `.claude/workflows/orch-review.workflow.js` | Workflow name and error prefixes renamed. Agent types use the plugin namespace (`orchestration-kit:code-reviewer`, `orchestration-kit:silent-failure-hunter`). Both `agent()` calls set `model: 'sonnet'` and `effort: 'medium'`. Two comments reworded. The language reviewer is gone: upstream keeps a map from 18 language names to a reviewer agent, and here every entry was the one `code-reviewer`, so the extra dimension differed from `quality` in its label only; an input that still names a `language` is read as one that does not. The diff travels as a file whose length each reviewer must reach. With `contractFile`, a fourth reviewer reads the task contract beside the diff and lists every requirement as met, unmet or unjudged; an unmet one is a HIGH finding, and a reviewer that names no requirement counts as failed. |
+| `commands/orchestration-review.md` | `.claude/commands/orch-review.md` | Command name, description and intro reworded. `scriptPath` points at `${CLAUDE_PLUGIN_ROOT}/review/orchestration-review.workflow.js`. Branch Mode, `--in <directory>` and `--contract <file>` are added. The derivation and passing of `language` is gone, with the language reviewer of the workflow. |
 | `agents/code-reviewer.md` | `.claude/agents/code-reviewer.md` | Description only: the "MUST BE USED for all code changes" wording was removed so the agent is not invoked on every edit once the plugin is installed. |
 
 ## Taken as a format only
 
-- Handoff document: the eight section titles and the Role State block (`skills/master/handoff-template.md`).
+- Handoff document: the eight section titles and the Role State block, which holds `Current Role` only (`skills/master/handoff-template.md`). Upstream's block also has `Role Lock`, `Frozen` and `Unlock`; they were dropped because nothing here reads them, where upstream gives them force with a hook. A handoff that still carries the three lines is accepted.
 - Contract front matter rules (`skills/master/contract-template.md`).
 - Succession trigger and the 13 lineage fields (written through `lineage.append_entry`).
 
@@ -50,7 +50,7 @@ of `tests/fake_orca.py` and in `skills/master/SKILL.md`.
 | `probe-model codex` | `scripts/model-probe-rollout`. Here the rollout is matched by the folder its first record names |
 | `dispatch`: `CONTRACT_ALREADY_RUNNING` | `master-ops/scripts/dispatch-collision-check`. Upstream warns about overlapping scopes; here the very same contract is refused until Orca shows its dispatch settled |
 | `dispatch --follows` and the cap of three attempts at one task | The gate's `--card` column and `docs/en/resident-orchestrator-loop.md` of mogui-agent-harness. The card is the Orca Task of the task's first dispatch |
-| `succeed`: the Role State check, and a section that is empty or still the template's | `bootstrap.py` (`VALID_ROLES`). Checked when the handoff is written, not when the successor boots |
+| `succeed`: `Current Role` is one of the roles, and a section is neither empty nor still the template's. `Role Lock`, `Frozen` and `Unlock` are not asked for: nothing here reads them, where upstream gives them force with a hook | `bootstrap.py` (`VALID_ROLES`). Checked when the handoff is written, not when the successor boots |
 | `inherit`: whether the predecessor's terminal is still open | `succession.py` (`detect_duplicate_instances`, `retire_predecessor`). Nothing is closed here: that stays the owner's decision |
 | `hooks/hooks.json` with `compacted` | `master-ops/scripts/compaction-probe.sh`. No recall quiz and no log |
 | `report` | `scripts/dispatch-gate report`, vendored: a pass-through, followed by every task with more than one attempt |
