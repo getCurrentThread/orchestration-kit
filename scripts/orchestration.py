@@ -1003,7 +1003,8 @@ def probe_model(args: argparse.Namespace) -> int:
     deadline = time.monotonic() + 25  # the gate kills this probe after 30 seconds
     while time.monotonic() < deadline:
         # shortcut: Codex takes the newest rollout of the folder born after the dispatch; another one started there
-        # in that window could be read instead. Name the dispatch once a Codex rollout carries it.
+        # in that window could be read instead. A Codex rollout does carry the dispatch id, but the owner keeps the
+        # Codex path unchanged; upgrade when the owner opens it: `sessions_naming` then names the dispatch for Codex too.
         born = (
             sessions_born(args.agent, args.folder, args.since - 2) if args.agent == "codex"
             else sessions_naming(args.agent, args.folder, args.since - 2, args.dispatch, [])
@@ -1666,7 +1667,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument("agent", choices=("claude", "codex"))
     sub.add_argument("folder")
     sub.add_argument("since", type=float)
-    sub.add_argument("dispatch", help="the dispatch whose session is read (Claude only; a Codex rollout does not carry it)")
+    sub.add_argument("dispatch", help="the dispatch whose session is read (used for Claude only; the Codex path is kept as it is)")
     sub.set_defaults(handler=probe_model)
 
     commands.add_parser("compacted").set_defaults(handler=compacted)  # internal: the plugin's session-start hook
