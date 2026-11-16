@@ -1209,9 +1209,10 @@ def succeed(args: argparse.Namespace) -> int:
     except Refused as refusal:
         return fail(str(refusal))
     step = (
-        "stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner that the "
-        f"successor now runs in Orca, in terminal {terminal}, and that your terminal closes once the successor has "
-        "recorded the succession with PASS. Then stop working"
+        "stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner in one "
+        f"line that the successor now runs in Orca, in terminal {terminal}: your terminal closes once the successor has "
+        "recorded the succession with PASS, which came 27 seconds after the launch when it was measured, so a longer "
+        "message may never be read. Then stop working"
     )
     print(json.dumps({"stage": "succeed", "allow": True, "terminal": terminal, "next": step}, ensure_ascii=False))
     return 0

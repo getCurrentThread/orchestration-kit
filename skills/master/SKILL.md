@@ -289,9 +289,10 @@ the owner that one is due, then write it.
    No terminal named (exit 2): look with `orca terminal list --worktree path:<folder> --json` before a second run,
    which could start a second successor. A terminal named and the kickoff not delivered (exit 2): read its screen
    with `orca terminal read --terminal <handle> --screen`, and do not run `succeed` again.
-3. Stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner the
-   successor is up and that your terminal closes once the successor has recorded the succession with `PASS`,
-   then stop working.
+3. Stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner in one
+   line that the successor is up, then stop working. Your terminal closes once the successor has recorded the
+   succession with `PASS`, which came 27 seconds after the launch when it was measured (2026-11-16), before the
+   predecessor had written its closing message: say what the owner must hear from you before step 2.
 
 As the successor: read the handoff, take over the Run if the kickoff names one, then record the
 succession with one command:
@@ -306,9 +307,10 @@ ORCHESTRATION inherit --handoff <file> --verification PASS|PARTIAL|FAILED --pare
   alone, `PARTIAL` if you had to ask for something again, and `FAILED` if the handoff was unusable.
 - A `PASS` closes the predecessor's terminal, because two masters on one Run both take its mail and the owner
   can still type into the old one. Only the terminal that the workspace's own record (`.orchestration/master`,
-  written by `succeed`) and the kickoff both name is closed; the session's transcript stays on disk. After
-  `PARTIAL` or `FAILED` it stays open. A line that starts with `not verified (` or `kept open (` goes into your
-  report with the command it names.
+  written by `succeed`) and the kickoff both name is closed; the session's transcript stays on disk. A dispatch
+  the predecessor started stays open through the close, and its report reaches the Run you took over (one
+  scratch dispatch on Orca 1.4.259, 2026-11-16). After `PARTIAL` or `FAILED` the terminal stays open. A line that
+  starts with `not verified (` or `kept open (` goes into your report with the command it names.
 - Report what you inherited to the owner, before any other work. After `PASS`, do not end your turn on
   that report: nobody answers it, and an idle successor stalls the work. Carry on with the next step the
   handoff names, unless the handoff says that step waits for the owner, and start your own watch if the
