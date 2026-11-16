@@ -39,6 +39,7 @@ VENDOR = ROOT / "vendor" / "mogui"
 GATE = VENDOR / "scripts" / "dispatch-gate"
 POLICY = ROOT / "config" / "model-tier-policy.json"
 PYTHON = [sys.executable, "-X", "utf8", "-s", "-B"]
+CLOSE_WAIT = 10  # seconds `retirement` waits for a closed terminal to leave Orca's list
 # Answered by the Claude Code CLI from its model picker, without an API turn.
 MODEL_LIST_REQUEST = '{"type":"control_request","request_id":"orchestration-kit","request":{"subtype":"list_models"}}\n'
 HANDOFF_HEADINGS = (
@@ -1280,7 +1281,10 @@ def retirement(predecessor: str, verification: str, recorded: str | None) -> str
         refused = close_terminal(predecessor)
         if refused:
             return f"not verified (Orca did not close terminal {predecessor}: {refused}; close it with `{command}`)"
-        after = live_terminals()
+        # Measured on 1.4.259: the list still holds a closed handle for about a second, so ask again until it is gone.
+        deadline = time.monotonic() + CLOSE_WAIT
+        while (after := live_terminals()) is not None and predecessor in after and time.monotonic() < deadline:
+            time.sleep(min(1, max(deadline - time.monotonic(), 0)))
         if after is None:
             return f"not verified (Orca said it closed terminal {predecessor}, but its second list of terminals is not whole)"
         if predecessor in after:

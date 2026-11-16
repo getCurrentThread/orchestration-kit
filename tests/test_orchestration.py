@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -904,7 +905,7 @@ class OrchestrationTest(unittest.TestCase):
 
         Return the exit code, the Orca calls to `terminal close`, and the newest lineage entry.
         """
-        for leftover in (self.log, Path(str(self.log) + ".closed")):
+        for leftover in (self.log, Path(str(self.log) + ".closed"), Path(str(self.log) + ".lag")):
             leftover.unlink(missing_ok=True)
         master = self.work / ".orchestration" / "master"
         master.parent.mkdir(exist_ok=True)
@@ -955,11 +956,26 @@ class OrchestrationTest(unittest.TestCase):
             ("odd answer", "not verified (Orca did not close terminal term_old: an answer not in the shape measured"),
             ("not carried out", "not verified (Orca said it closed terminal term_old, and it is still among Orca's live terminals"),
         ):
-            with self.subTest(switch=switch):
+            with self.subTest(switch=switch), mock.patch.object(orchestration, "CLOSE_WAIT", 0.3):  # not the 10 s of a real wait
                 code, closes, entry = self.succession(FAKE_ORCA_CLOSE=switch)
                 self.assertEqual((code, len(closes)), (0, 1))
                 self.assertIn(said, entry)
                 self.assertEqual((self.work / ".orchestration" / "master").read_text(encoding="utf-8"), "term_test")
+
+    def test_inherit_waits_for_a_closed_terminal_that_stays_listed_for_a_moment(self):
+        # Measured on 1.4.259: the list right after a close still holds the handle for about a second.
+        code, closes, entry = self.succession(FAKE_ORCA_CLOSE_LAG="2")
+        self.assertEqual((code, len(closes)), (0, 1))
+        self.assertIn("terminal term_old closed by its successor", entry)
+        self.assertGreaterEqual(sum(call[:2] == ["terminal", "list"] for call in self.orca_calls()), 3)
+
+    def test_inherit_stops_waiting_for_a_close_that_is_not_carried_out(self):
+        started = time.monotonic()
+        with mock.patch.object(orchestration, "CLOSE_WAIT", 0.5):
+            _, closes, entry = self.succession(FAKE_ORCA_CLOSE="not carried out")
+        self.assertIn("and it is still among Orca's live terminals", entry)
+        self.assertEqual(len(closes), 1)
+        self.assertLess(time.monotonic() - started, 2)
 
     def test_inherit_closes_nothing_for_an_entry_the_lineage_refuses(self):
         _, closes, before = self.succession()

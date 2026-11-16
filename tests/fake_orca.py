@@ -13,9 +13,13 @@ closed terminal, ok false with error.code terminal_not_writable; `terminal wait 
 timeout, ok false with error.code timeout; `orchestration send --to dispatch:<id>` (`result.messageId`).
 
 Measured on 1.4.259 on 2026-11-16, for `inherit`: `terminal close --terminal <handle> --json` of a terminal that holds an idle
-Claude session (exit 0, `result.close` {handle, tabId, ptyKilled: true}; the handle is gone from the next `terminal list`), and of a
-handle Orca does not know (exit 1, ok false, error.code terminal_handle_stale). The fake answers the first for a handle it lists,
-the second for any other, and leaves a closed handle out of every later `terminal list` of the test.
+Claude session (exit 0, `result.close` {handle, tabId, ptyKilled: true}), and of a handle Orca does not know (exit 1, ok false,
+error.code terminal_handle_stale). The fake answers the first for a handle it lists, the second for any other, and leaves a
+closed handle out of every later `terminal list` of the test. Three plain shell terminals, each closed and then listed again and
+again: the list asked about 0.4 s after the close had answered still held the handle in 3 of 3 runs; it was gone 0.8 s after
+the answer in two runs and 1.2 s after it in the third.
+  FAKE_ORCA_CLOSE_LAG=<n>            a closed handle stays in the next <n> `terminal list` answers, then is left out: stands for
+                                     the measured delay (about a second), counted in lists instead of time.
 
 Switches that were NOT measured against Orca. Each makes the fake answer in a way a test needs and stands for a doubt the
 wrapper must survive, not for an answer Orca was seen to give:
@@ -244,6 +248,11 @@ elif command == "orchestration send":
 elif command == "terminal list":
     closed = Path(os.environ["FAKE_ORCA_LOG"] + ".closed")
     gone = closed.read_text(encoding="utf-8").split() if closed.exists() else []
+    lag = Path(os.environ["FAKE_ORCA_LOG"] + ".lag")
+    left = int(lag.read_text(encoding="utf-8")) if lag.exists() else 0
+    if left:  # the measured delay: the lists right after a close still hold the handle
+        lag.write_text(str(left - 1), encoding="utf-8")
+        gone = []
     handles = [handle for handle in os.environ.get("FAKE_ORCA_TERMINALS", "term_new").split(",") if handle not in gone]
     result = {"terminals": [{"handle": handle} for handle in handles], "totalCount": len(handles), "truncated": False}
 elif command == "terminal close":
@@ -256,6 +265,7 @@ elif command == "terminal close":
         sys.exit(1)
     if os.environ.get("FAKE_ORCA_CLOSE") != "not carried out":
         closed.write_text(" ".join(gone + [handle]), encoding="utf-8")
+        Path(os.environ["FAKE_ORCA_LOG"] + ".lag").write_text(os.environ.get("FAKE_ORCA_CLOSE_LAG", "0"), encoding="utf-8")
     result = {"close": {"handle": handle, "tabId": str(uuid.uuid4()), "ptyKilled": True}}
     if os.environ.get("FAKE_ORCA_CLOSE") == "odd answer":
         result = {}
