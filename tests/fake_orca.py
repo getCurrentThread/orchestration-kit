@@ -165,8 +165,9 @@ elif command == "orchestration worker-show":
         },
         "projection": {"dispatchId": dispatch, "outcome": outcome, "liveness": {"verdict": os.environ.get("FAKE_ORCA_LIVENESS", "live")}},
         # Orca leaves the field out when it did not look, and gives null when it looked and found no wait. The
-        # shape is from `orca orchestration worker-show --help`: no parked worker was there to measure.
-        "observation": {"agentWait": {"evidence": "prompt-text"} if dispatch in frame().get("parked", []) else None},
+        # shape of a wait was measured on Orca 1.4.259 on 2026-11-16, from a Claude worker that waited on an
+        # AskUserQuestion prompt: how Orca knows and since when (ms), and nothing of what the prompt asks.
+        "observation": {"agentWait": {"source": "hook", "since": 1794824861316} if dispatch in frame().get("parked", []) else None},
     }
     if os.environ.get("FAKE_ORCA_SHOW") == "lacks":  # an answer without the fields the usage is found by
         del result["worker"]["worktreeId"]

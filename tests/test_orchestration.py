@@ -531,7 +531,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertNotIn("restarted", output)
         self.assertNotIn("parked", output)
         frames = [{"runtime": "one", "workers": {"ctx_test": "done"}, "parked": ["ctx_test"], "unread": 0}]
-        self.assertIn('parked on a prompt that only a human can answer: {"evidence": "prompt-text"}', self.watch(frames, "--stalled-after", "0"))
+        self.assertIn('parked on a prompt that only a human can answer: {"source": "hook", "since": 1794824861316}', self.watch(frames, "--stalled-after", "0"))
         # An outcome Orca did not have when this was written is never taken for "settled".
         frames = [{"runtime": "one", "workers": {"ctx_test": "unknown"}, "outcomes": {"ctx_test": "cancelled"}, "unread": 0}]
         output = self.watch(frames, "--stalled-after", "0")
@@ -1253,8 +1253,8 @@ class OrchestrationTest(unittest.TestCase):
         held = (
             ("live", {}, f" is open in {run}, and Orca shows its agent live.",
              f"Keep `ORCHESTRATION watch --run {run}` running; a message reaches it with: orca orchestration send --to dispatch:{{id}}"),
-            ("parked", {"FAKE_ORCA_FRAMES": str(parked)}, f' is open in {run}, parked on a prompt that only a human can answer: {{"evidence": "prompt-text"}}.',
-             "Tell the owner what it asks, and do not answer it through its terminal."),
+            ("parked", {"FAKE_ORCA_FRAMES": str(parked)}, f' is open in {run}, parked on a prompt that only a human can answer: {{"source": "hook", "since": 1794824861316}}.',
+             "Read what it asks with orca orchestration worker-read --dispatch {id}, tell the owner, and do not answer it through its terminal."),
             ("ended", {"FAKE_ORCA_LIVENESS": "unverifiable"},
              f" is open in {run}, and its agent has ended while its terminal is kept (Claude's resume line, then a shell prompt):",
              "run ORCHESTRATION resume --dispatch {id}"),

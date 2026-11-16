@@ -1730,7 +1730,11 @@ def step_of(dispatch_id: str, answer: dict, siblings: list[str], refused: bool) 
         )
         if parked:
             head = f" is open {inside}, parked on a prompt that only a human can answer: {json.dumps(parked)[:200]}."
-            step = "Tell the owner what it asks, and do not answer it through its terminal."
+            # Orca's `agentWait` says how it knows and since when, not what the prompt asks: the screen does.
+            step = (
+                f"Read what it asks with orca orchestration worker-read --dispatch {dispatch_id}, tell the owner, and do "
+                "not answer it through its terminal."
+            )
         elif verdict == "live":
             head = f" is open {inside}, and Orca shows its agent live."
             step = f"{keep}; a message reaches it with: orca orchestration send --to dispatch:{dispatch_id}"
