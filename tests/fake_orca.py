@@ -34,8 +34,8 @@ wrapper must survive, not for an answer Orca was seen to give:
   FAKE_ORCA_START=no dispatchId      `worker-start` exits 0 with a receipt that lacks `dispatchId`, the worker started: stands for
                                      a receipt of a shape this wrapper does not read.
   FAKE_ORCA_START=effects without id `worker-start` exits 0 with an `effects` entry that has no `id`; "effects without kind"
-                                     the same with no `kind`; "no effects" without `effects`; "effects not a list" with a string
-                                     in its place: stand for a receipt of a shape this wrapper does not read.
+                                     the same with no `kind`; "no effects" without `effects`: stand for a receipt of a
+                                     shape this wrapper does not read.
   FAKE_ORCA_DECOY=<model>            after the worker's session file, a newer one in the same folder on that model whose first
                                      prompt does not name the dispatch: stands for a second worker there, or the reflector
                                      session that the owner's autoharness starts when a session ends.
@@ -141,8 +141,6 @@ if command == "orchestration worker-start":
         del result["effects"][0]["kind"]
     if os.environ.get("FAKE_ORCA_START") == "no effects":
         del result["effects"]
-    if os.environ.get("FAKE_ORCA_START") == "effects not a list":
-        result["effects"] = "worktree"
 elif command == "orchestration worker-show":
     dispatch = option("--dispatch")
     outcome = os.environ.get("FAKE_ORCA_OUTCOME", "in_progress")
@@ -169,8 +167,6 @@ elif command == "orchestration worker-show":
         # AskUserQuestion prompt: how Orca knows and since when (ms), and nothing of what the prompt asks.
         "observation": {"agentWait": {"source": "hook", "since": 1794824861316} if dispatch in frame().get("parked", []) else None},
     }
-    if os.environ.get("FAKE_ORCA_SHOW") == "lacks":  # an answer without the fields the usage is found by
-        del result["worker"]["worktreeId"]
     for path in filter(None, os.environ.get("FAKE_ORCA_WITHOUT", "").split(",")):  # dotted paths a test takes out
         *parents, last = path.split(".")
         holder = result

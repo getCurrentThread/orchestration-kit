@@ -1,23 +1,7 @@
 """orchestration-kit: gated worker dispatch and master succession on top of the Orca CLI.
 
-Run from the workspace root as `python -X utf8 -s -B orchestration.py <command>`:
-  prepare   make a project directory ready for a worker: known to Orca, and carrying the repository harness
-  dispatch  check a contract with the vendored dispatch gate, start one Orca worker, register it
-  watch     wait for a Run's workers; return when the master must act and Orca has not woken it
-  start     from a terminal outside Orca: start a fresh master in Orca on this checkout, with what the owner said
-  succeed   validate a handoff document, record this terminal as the workspace's master, launch a successor master in Orca
-  inherit   append the succession to the lineage ledger, and after a PASS close the predecessor's terminal in Orca
-            (run by the successor)
-  report    settle the token usage of finished dispatches, then summarise the dispatch ledger: models, denials, tiers,
-            overrides, token budgets and usage
-  resume    bring back the Claude session of a worker whose agent ended without a report, in its own terminal and
-            for its own dispatch
-  status    say where every dispatch that `report` has not measured stands, and the step it waits for (only reads)
-  override-hold
-            on the owner's word, end the hold of one dispatch that the gate refused at register and that Orca keeps
-            under an outcome this code does not know, once Orca shows its agent exited
-
-State is kept in ./.orchestration/ of the current directory.
+Run from the workspace root as `python -X utf8 -s -B orchestration.py <command>`. State is kept in
+./.orchestration/ of the current directory.
 """
 
 from __future__ import annotations
@@ -79,8 +63,15 @@ LINEAGE_TEXT_FIELDS = (
 )
 
 
+def state_file(name: str) -> Path:
+    """Return the path of a file of this workspace's state. A read through it makes no folder: a hook, a refusal
+    and a command that only reads leave nothing behind."""
+    return Path.cwd() / ".orchestration" / name
+
+
 def state_dir() -> Path:
-    path = Path.cwd() / ".orchestration"
+    """Return the state folder, made for a write."""
+    path = state_file("")
     path.mkdir(exist_ok=True)
     return path
 
@@ -155,15 +146,11 @@ def launch_model(agent: str, model: str) -> str:
     return model
 
 
-def launch_problem(model: str) -> str | None:
-    """Return why a model may not be launched, or None. Only models the policy covers are allowed."""
+def launch_problem(model: str, effort: str | None) -> str | None:
+    """Return why a model may not be launched at an effort, or None. Only models the policy covers are allowed, and
+    those of the top tier are reserved for re-runs at medium effort."""
     if family(model) is None:
         return f"model {model!r} is not listed in {POLICY}"
-    return None
-
-
-def top_tier_problem(model: str, effort: str) -> str | None:
-    """Top-tier models are reserved for re-runs at medium effort."""
     if family(model) in tiers().get("top", []) and effort != "medium":
         return f"top-tier model {model!r} may only run at effort 'medium'"
     return None
@@ -212,7 +199,7 @@ def contract_title(contract: str) -> str:
 def ledger_rows(name: str = "dispatch-ledger.jsonl") -> list[dict]:
     """Return the rows of this workspace's dispatch ledger, or of another JSON-lines file of its state folder. A line
     that is not a JSON object is left out."""
-    ledger = state_dir() / name
+    ledger = state_file(name)
     rows = []
     for line in ledger.read_text(encoding="utf-8", errors="replace").splitlines() if ledger.exists() else []:
         try:
@@ -576,7 +563,7 @@ def dispatch(args: argparse.Namespace) -> int:
     model = args.model or (codex_model() if args.agent == "codex" else None)
     if not model:
         return fail("pass --model; only codex has a default, the model set in ~/.codex/config.toml")
-    problem = launch_problem(model) or top_tier_problem(model, args.effort)
+    problem = launch_problem(model, args.effort)
     if problem:
         return fail(problem)
     entry = family(model)  # what the gate and the ledger see
@@ -619,10 +606,8 @@ def dispatch(args: argparse.Namespace) -> int:
     # and not always its task (measured on 2026-11-16: the same contract started a second worker beside it). So such
     # a row holds every dispatch. The gate writes one for MODEL_TIER_ESCALATION and ORCHESTRATION_UNVERIFIED only: a
     # register it refuses for another reason leaves no row, and nothing here holds for it.
-    # Read only where a ledger is: a dispatch that is refused further down leaves no state folder behind.
-    rows = ledger_rows() if (Path.cwd() / ".orchestration" / "dispatch-ledger.jsonl").is_file() else []
-    refused = [row["job_id"] for row in rows if row.get("job_id") and row.get("decision") != "ALLOW"]
-    if unaccepted := unsettled_dispatch(refused, hold_overrides() if refused else ()):
+    refused = [row["job_id"] for row in ledger_rows() if row.get("job_id") and row.get("decision") != "ALLOW"]
+    if unaccepted := unsettled_dispatch(refused, hold_overrides()):
         running, outcome, state = unaccepted
         print(json.dumps({"stage": "check", "allow": False, "reason": "UNACCEPTED_WORKER_RUNNING", "dispatch": running, "outcome": outcome, "state": state}))
         if state == "open":
@@ -1261,9 +1246,7 @@ def start(args: argparse.Namespace) -> int:
 
 def succeed(args: argparse.Namespace) -> int:
     if args.model:
-        problem = launch_problem(args.model) or top_tier_problem(args.model, args.effort or "")
-        if not problem and not args.effort:
-            problem = "pass --effort with --model"
+        problem = launch_problem(args.model, args.effort) or (None if args.effort else "pass --effort with --model")
     else:
         # As `start`: the owner's default model. Orca takes --effort only with --model.
         problem = "--effort needs --model: leave both out to keep the owner's default model" if args.effort else None
@@ -1326,22 +1309,14 @@ def live_terminals() -> set[str | None] | None:
 def close_terminal(handle: str) -> str | None:
     """Ask Orca to close a terminal. Return None if it answered as measured on 1.4.259, else what it said."""
     try:
-        done = run([orca(), "terminal", "close", "--terminal", handle, "--json"], timeout=90)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return f"no answer ({type(error).__name__})"
-    try:
-        answer = json.loads(done.stdout)
-    except ValueError:
-        answer = None
-    if not isinstance(answer, dict):
-        return f"exit {done.returncode}, and its answer is not JSON: {(done.stdout or done.stderr).strip()[-200:]!r}"
-    result = answer.get("result")
-    closed = result.get("close") if isinstance(result, dict) else None
-    if done.returncode == 0 and answer.get("ok") is True and isinstance(closed, dict) and closed.get("handle") == handle:
+        answer = orca_answer("terminal", "close", "--terminal", handle)
+    except OrcaMissing:
+        answer = {}
+    if answer.get("ok") is True and pluck(answer, "result", "close", "handle") == handle:
         return None
     error = answer.get("error")
     said = error.get("code") if isinstance(error, dict) else error
-    return str(said or f"an answer not in the shape measured (exit {done.returncode})")[:200]
+    return str(said or ("an answer not in the shape measured" if answer else "no answer"))[:200]
 
 
 def retirement(predecessor: str, verification: str, recorded: str | None) -> str:
@@ -1432,7 +1407,7 @@ def compacted(args: argparse.Namespace) -> int:
     A compacted master works from a summary of what it knew. The hook runs in every session of every project
     that has the plugin, so it says nothing unless this terminal is the one that last dispatched or inherited here.
     """
-    marker = Path.cwd() / ".orchestration" / "master"  # not state_dir(): a hook leaves no folder behind
+    marker = state_file("master")
     handle = os.environ.get("ORCA_TERMINAL_HANDLE")
     if handle and marker.is_file() and marker.read_text(encoding="utf-8").strip() == handle:
         print(
@@ -1552,8 +1527,8 @@ def token_line(row: dict, shown: str) -> str | None:
 
 
 def missing_ledger() -> int | None:
-    """Fail unless the current folder holds a dispatch ledger, and leave no folder behind."""
-    ledger = Path.cwd() / ".orchestration" / "dispatch-ledger.jsonl"
+    """Fail unless the current folder holds a dispatch ledger."""
+    ledger = state_file("dispatch-ledger.jsonl")
     if not ledger.is_file():  # an empty summary from the wrong folder would read as "nothing was dispatched"
         return fail(f"no dispatch ledger at {ledger}; run this from the workspace root")
     return None
@@ -1628,11 +1603,10 @@ def resumable(dispatch_id: str) -> dict[str, str]:
 
     Reads only. A session started twice edits the same files twice, so each doubt is a refusal.
     """
-    ledger = Path.cwd() / ".orchestration" / "dispatch-ledger.jsonl"  # not state_dir(): a refusal leaves no folder behind
-    if not ledger.is_file() or not any(row["job_id"] == dispatch_id for row in registered()):
+    if not any(row["job_id"] == dispatch_id for row in registered()):
         raise Refused(
             "NOT_REGISTERED",
-            f"the ledger of this workspace ({ledger}) does not hold {dispatch_id} as a registered dispatch. Run this from the "
+            f"the ledger of this workspace ({state_file('dispatch-ledger.jsonl')}) does not hold {dispatch_id} as a registered dispatch. Run this from the "
             "workspace root that dispatched it, and name the `dispatch` of its dispatch line",
         )
     answer = orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full")
@@ -1846,7 +1820,7 @@ def status(args: argparse.Namespace) -> int:
     if missing := missing_ledger():
         return missing
     own = os.environ.get("ORCA_TERMINAL_HANDLE")
-    marker = Path.cwd() / ".orchestration" / "master"
+    marker = state_file("master")
     recorded = marker.read_text(encoding="utf-8", errors="replace").strip() if marker.is_file() else ""
     if not recorded:
         record = "none"
@@ -1979,7 +1953,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub.set_defaults(handler=dispatch)
 
-    sub = commands.add_parser("watch", help="wait for a Run's workers; run it in the background")
+    sub = commands.add_parser(
+        "watch", help="wait for a Run's workers and return once the master must act and Orca has not woken it; run it in the background"
+    )
     sub.add_argument("--run", required=True, help="Orca Run id, as the dispatch line gives it")
     sub.add_argument("--poll", type=float, default=10, help="seconds between looks at Orca (default: 10)")
     sub.add_argument("--grace", type=float, default=30, help="seconds mail may stay unread before you are woken (default: 30)")
@@ -1997,7 +1973,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub.set_defaults(handler=start)
 
-    sub = commands.add_parser("succeed", help="launch a successor master from a handoff document")
+    sub = commands.add_parser(
+        "succeed", help="validate a handoff document, record this terminal as the workspace's master, launch a successor master in Orca"
+    )
     sub.add_argument("--handoff", required=True)
     launch_options(sub, model_required=False, effort_required=False)  # both left out: the owner's default model, as `start`
     sub.add_argument("--run", help="Orca Run id the successor should take over")
@@ -2018,11 +1996,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument("--reopened-decision-count", type=int, default=0)
     sub.set_defaults(handler=inherit)
 
-    sub = commands.add_parser("report", help="summarise the dispatch ledger")
+    sub = commands.add_parser("report", help="settle the token usage of finished dispatches, then summarise the dispatch ledger")
     sub.add_argument("--today", action="store_true", help="only today's entries (UTC)")
     sub.set_defaults(handler=report)
 
-    sub = commands.add_parser("resume", help="bring back the Claude session of a worker whose agent ended without a report")
+    sub = commands.add_parser(
+        "resume", help="bring back the Claude session of a worker whose agent ended without a report, in its own terminal and for its own dispatch"
+    )
     sub.add_argument("--dispatch", required=True, help="the worker's dispatch, as the dispatch line gives it")
     sub.set_defaults(handler=resume)
 

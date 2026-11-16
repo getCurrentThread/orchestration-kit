@@ -39,12 +39,10 @@ Leave `--said` out when the owner has only asked you to act as master. The comma
 closed, makes the folder a workspace of Orca's, without a harness, and launches the master in a terminal
 there, on the owner's default model. It writes nothing into the folder.
 
-- Exit 0, `"stage": "start"`: the master runs in the terminal the line names, in the tab that is in front
-  in Orca. It starts on a task the owner gave you, and waits for the first task otherwise. Tell the owner
-  where it runs and that tasks go to it there, then stop: you are not the master.
-- `Orca cannot be reached`: follow the numbered steps of the message. Nothing was started, so running the
-  same command again is safe.
-- Any other refusal names what to look at. Do that before a second run, which could start a second master.
+- Exit 0, `"stage": "start"`: the master runs in the terminal the line names. It starts on a task the owner
+  gave you, and waits for the first task otherwise. Do what `next` says, then stop: you are not the master.
+- A refusal (exit 2) says what to do. Only after `Orca cannot be reached` is the same command safe to run
+  again as it was; after any other, look first, because a second run could start a second master.
 - A conversation that already holds work a sentence cannot carry (decisions, findings, open tracks) goes
   over as a handoff instead: `succeed` works from any terminal too. See "Hand over to a successor".
 
@@ -70,32 +68,28 @@ there, on the owner's default model. It writes nothing into the folder.
 
    A new worktree starts from the branch that is checked out there and holds only what is committed on it:
    commit what the worker must see before you dispatch.
-3. Read the JSON lines it prints:
+3. Read the JSON lines it prints. A refusal (exit 2) ends with an `orchestration: ...` line that says what
+   to do:
    - Exit 0, `"stage": "register"`: the worker runs and is recorded. `dispatch` and `run` are the ids the
      commands below take, `workspace` is the folder the worker runs in, and `task_attempt` says which
      attempt at its task this is. Do what `next` says: keep a watch running, then end your turn.
    - Exit 2 with only an `orchestration: ...` line, or at `"stage": "prepare"`, `"check"` or `"budget"`: refused
      before anything was started, and no worker exists. Fix what the line says and dispatch again.
    - `CONTRACT_ALREADY_RUNNING` or `TASK_ALREADY_RUNNING`: an earlier dispatch is not settled, and no second
-     worker was started. To change what that worker does, `send` to the dispatch the line names; see
-     "After an Orca restart" when only its report is missing. An `outcome` other than `in_progress` is no
-     proof that it is over: look at it with the command the `orchestration: ...` line names. Only the very
-     same contract file is held, so one you have revised for a new attempt passes.
+     worker was started. Do what the line says; when only that worker's report is missing, see "After an
+     Orca restart". Only the very same contract file is held, so one you have revised for a new attempt
+     passes.
    - `TASK_ATTEMPTS_EXHAUSTED`: the task has had three attempts. Stop, and tell the owner what was tried.
    - Exit 2 at `"stage": "register"`: the worker runs but was not accepted, for example
      `MODEL_TIER_ESCALATION` (it runs on a higher tier than declared). Stop it with
      `orca orchestration worker-stop --dispatch <id>` and tell the owner. A refusal that the gate wrote into
      the ledger (that one, and `ORCHESTRATION_UNVERIFIED`) refuses every dispatch with
-     `UNACCEPTED_WORKER_RUNNING`, and starts no worker, until Orca shows that dispatch settled or gone. A
-     refusal for another reason leaves no row and holds nothing: stop its worker all the same. If Orca keeps a
-     stopped one under an outcome the wrapper does not know, the hold stays: tell the owner. Only on the
-     owner's explicit yes for that dispatch, never on your own, run
-     `ORCHESTRATION override-hold --dispatch <id> --reason "<the owner's reason>"`. It ends that one hold, and
-     only while Orca shows the dispatch's agent exited: it refuses one that is open or that Orca cannot be
-     read about, and such a one holds again whatever was recorded.
-   - `Orca reported the start as done` (exit 2, Orca's answer printed): a worker may be running that no ledger row
-     holds. Find it with `orca orchestration run-current --json`, then `orca orchestration worker-list --run <run>`,
-     and do not dispatch the contract again before you have.
+     `UNACCEPTED_WORKER_RUNNING`, whose line says what to do, until Orca shows that dispatch settled or
+     gone. A refusal for another reason leaves no row and holds nothing: stop its worker all the same.
+     `ORCHESTRATION override-hold`, which that line names, is run only on the owner's explicit yes for that
+     dispatch, never on your own.
+   - `Orca reported the start as done` (exit 2, Orca's answer printed): a worker may be running that no ledger
+     row holds. Find it as the line says before you dispatch the contract again.
    - `worker-start failed`: do not rerun it. Load Orca's recovery guide and read `failedStage` first.
 
 ### Models and effort
@@ -145,9 +139,9 @@ To see what an install would do, run
   whether or not it has entries: deal with every entry before you end your turn, and name what was
   changed in your report. What an entry leaves to the owner stays the owner's: how to merge a `*.starter`
   file, git hooks of the project's own, and installing a tool the machine lacks.
-- No git author name or email: git refuses every commit there, yours and a worker's. Ask the owner which
-  identity to use, and set it for that project only (`git -C <directory> config user.name ...`, and
-  `user.email`), never with `--global`. Do this before the first dispatch.
+- No git author name or email: ask the owner which identity to use, and set it for that project only
+  (`git -C <directory> config user.name ...`, and `user.email`), never with `--global`. Do this before the
+  first dispatch.
 - Commit a new harness when the owner agrees, after the setup has run. Stage its files by name, never
   with `git add -A`, and its scripts and hooks with the `git add --chmod=+x ...` command the entry gives.
   The harness's pre-commit hook runs for that commit too: it dates the pages under `docs/`, writes the git
@@ -166,18 +160,10 @@ was left unused in your report.
 
 ## Where a dispatch stands
 
-`ORCHESTRATION status` prints the state and the next step of every dispatch that `report` has not measured. It only
-reads: no gate, no file, no worker. Run it as a successor, after a compaction, after an Orca restart, and before a
-`send` to a worker that has gone quiet.
-
-| State | What Orca shows | What you may do |
-|---|---|---|
-| `open` | outcome `in_progress` | wait; `send` if its agent is live; `resume` if its screen proves the agent ended |
-| `succeeded` | outcome `succeeded` | verify, review, merge; a fix is a new dispatch with `--follows` |
-| `failed` | outcome `failed` | dispatch the task again with `--follows`; stop after 3 attempts |
-| `unknown` | any other outcome | read it as open; look at it and tell the owner |
-| `gone` | `dispatch_not_found`, as after `orca orchestration reset` | nothing: `report` settles it as unmeasured |
-| `unread` | no answer, a refusal, or no outcome | see that `orca status` answers, then run `status` again |
+`ORCHESTRATION status` prints, for every dispatch that `report` has not measured, where it stands (open,
+succeeded, failed, an outcome the wrapper does not know, gone after an `orca orchestration reset`, or no
+usable answer from Orca) and the step it waits for. It only reads: no gate, no file, no worker. Run it as a
+successor, after a compaction, after an Orca restart, and before a `send` to a worker that has gone quiet.
 
 ## Wait for workers
 
@@ -194,22 +180,21 @@ why. After you have dealt with a wake, start the watch again if a dispatch is st
 `orca orchestration check` in a loop or a script: it takes your mail. `No messages.` from a `check` after
 a repeated wake is the whole answer, not an error.
 
-- `... are unread and Orca has not woken you`: read the mail with the command the line names.
+Each line of a watch names its step: run the command it names. What the lines do not say:
+
 - `... is open and its worker's screen ... has not changed for ...`: the worker has most likely stopped
-  without a report. Read its screen with the command the line names; when the line instead says the agent has
-  ended and names `ORCHESTRATION resume --dispatch <id>`, the screen showed the resume line: see the next bullet.
-  If it is back at its prompt with its agent alive, see "After an Orca restart"; if the agent has ended, see the next bullet. Only if the screen shows it
-  still at work, start the watch again with a longer `--stalled-after <seconds>`. `liveness unverifiable` is no
-  stall by itself. When the line adds `parked on a prompt that only a human can answer`, the worker is healthy
-  and waits for an approval or a login: tell the owner what it asks, and do not answer it through its terminal.
-  When it adds an outcome `which this watch does not know`, look at the dispatch and tell the owner that the
-  watch needs that name.
-- The screen shows that the agent has ended (Claude's `Resume this session with:` line, then a shell prompt):
-  run `ORCHESTRATION resume --dispatch <id>`, then start the watch again. The worker's own session comes back
-  in its terminal and is told to go on, for the same dispatch: no new dispatch, no ledger line, no attempt
-  used. A refusal (exit 2) starts nothing and says what to do: an agent that may still run is never resumed,
-  nor is a worker that has settled or is not Claude. Where the terminal is gone, Orca has failed the
-  dispatch and nothing brings it back: dispatch the task again with `--follows`, as before.
+  without a report. Read its screen with the command the line names. If it is back at its prompt with its
+  agent alive, see "After an Orca restart"; if the agent has ended, see the next bullet. Only if the screen
+  shows it still at work, start the watch again with a longer `--stalled-after <seconds>`. `liveness
+  unverifiable` is no stall by itself. When the line adds `parked on a prompt that only a human can
+  answer`, the worker is healthy and waits for an approval or a login: tell the owner what it asks, and do
+  not answer it through its terminal. When it adds an outcome `which this watch does not know`, look at the
+  dispatch and tell the owner that the watch needs that name.
+- The agent has ended (the line names `ORCHESTRATION resume --dispatch <id>`, or the screen shows Claude's
+  `Resume this session with:` line and then a shell prompt): run that command, then start the watch again.
+  The worker's own session comes back in its terminal for the same dispatch: no new dispatch, no ledger
+  line, no attempt used. A refusal (exit 2) starts nothing and says what to do. Where the terminal is
+  gone, Orca has failed the dispatch and nothing brings it back: dispatch the task again with `--follows`.
 - `... has settled and its mail is read`: nothing is left to wait for. What the workers reported is still
   yours to review and merge. A line that names a command for a settled dispatch (`Orca names a next step`,
   `Orca keeps its terminal open`) is for after that: run the command only once you no longer need that
@@ -308,10 +293,10 @@ the owner that one is due, then write it.
    keep the owner's default model, as `start` does (Orca takes `--effort` only with `--model`); name both only when
    the owner asks for a model. `orca orchestration run-current --json` gives the Run id. A Run exists only once something was
    dispatched: leave `--run` out while it gives none. Exit 0 with `"stage": "succeed"` names the successor's `terminal`.
-   No terminal named (exit 2): look with `orca terminal list --worktree path:<folder> --json` before a second run,
-   which could start a second successor. A terminal named and the kickoff not delivered (exit 2): read its screen
-   with `orca terminal read --terminal <handle> --screen`, and do not run `succeed` again.
-3. Stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner in one
+   No terminal named (exit 2): look as the line says before a second run, which could start a second
+   successor. A terminal named and the kickoff not delivered (exit 2): read its screen as the line says, and
+   do not run `succeed` again.
+3. Do what `next` says: stop your watch (the Run's mail is the successor's from now on), tell the owner in one
    line that the successor is up, then stop working. Your terminal closes once the successor has recorded the
    succession with `PASS`, which came 27 seconds after the launch when it was measured (2026-11-16), before the
    predecessor had written its closing message: say what the owner must hear from you before step 2.

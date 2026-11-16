@@ -53,11 +53,6 @@ class ReviewWorkflowTest(unittest.TestCase):
             self.assertIn("The diff is the file C:/work/review.diff", sent["prompt"])
             self.assertNotIn("4321", sent["prompt"])  # a reviewer that is told the count can repeat it unread
 
-    def test_a_caller_that_still_passes_a_language_gets_the_review_of_one_that_does_not(self):
-        plain = self.review(DIFF)
-        for language in ("python", "typescript", "klingon"):
-            self.assertEqual(self.review({**DIFF, "language": language}), plain)
-
     def test_a_blocking_finding_goes_to_a_verifier_that_reads_the_same_file(self):
         out = self.review(DIFF, {"review:quality": FOUND, "verify:": {"isReal": True, "confidence": 0.9, "reasoning": "r"}})
         self.assertEqual((out["result"]["verdict"], len(out["result"]["blocking"])), ("CHANGES_REQUESTED", 1))

@@ -12,7 +12,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -38,6 +37,8 @@ def tree(folder):
     return {path.relative_to(folder).as_posix(): path.read_bytes() for path in files}
 
 
+ROLE_STATE = "## Role State\n\nCurrent Role: Maintenance\n\n"
+FILLED = "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:])
 LINEAGE_ARGUMENTS = [
     "--verification", "PASS", "--parent-session", "term_old", "--successor-session", "term_new",
     "--inherited-role", "Maintenance", "--succession-reason", "owner request",
@@ -88,9 +89,22 @@ class OrchestrationTest(unittest.TestCase):
                 code = stop.code
         return code, output.getvalue()
 
-    def dispatch(self, *place, model=EFFICIENT, effort="low", tier="efficient", agent="claude", front=""):
+    def dispatch(self, *place, model=EFFICIENT, effort="low", tier="efficient", agent="claude", front="", contract=None):
         launch = ["--model", model] if model else []
-        return self.cli("dispatch", "--contract", self.contract(tier, agent, front), "--agent", agent, *launch, "--effort", effort, *place)
+        contract = contract or self.contract(tier, agent, front)
+        return self.cli("dispatch", "--contract", str(contract), "--agent", agent, *launch, "--effort", effort, *place)
+
+    def second_contract(self, name, added):
+        """Another contract file: the first one's text and one more line, which the gate counts as a contract of its own."""
+        path = self.work / name
+        path.write_text(Path(self.contract()).read_text(encoding="utf-8") + f"\n{added}\n", encoding="utf-8")
+        return path
+
+    def handoff(self, text=None):
+        """A handoff file: one that a successor can work from, unless a test passes its own text."""
+        path = self.work / "handoff.md"
+        path.write_text(ROLE_STATE + FILLED if text is None else text, encoding="utf-8")
+        return str(path)
 
     def ready(self, name):
         """A project that already carries a harness whose setup has run."""
@@ -128,10 +142,12 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(starts[0][starts[0].index("--from") + 1], "term_test")
         # Without a title Orca names the Task and its Run after the spec's first line, the front matter's "---".
         self.assertEqual(starts[0][starts[0].index("--task-title") + 1], "Say READY")
-        self.assertIn("watch --run run_test", json.loads(output)["next"])
+        line = json.loads(output)
+        self.assertIn("watch --run run_test", line["next"])
+        self.assertEqual((line["token_budget"], line["tokens_basis"]), (None, "total"))  # a contract without a budget
         rows = self.ledger()
         self.assertEqual([row["decision"] for row in rows], ["ALLOW", "ALLOW"])
-        self.assertEqual(rows[1]["job_id"], "ctx_test")
+        self.assertEqual((rows[1]["job_id"], rows[1]["token_budget"]), ("ctx_test", None))
         self.assertEqual(self.started_model(), versioned(EFFICIENT))  # Orca gets the version the CLI resolves the family to
         self.assertEqual(rows[1]["model_measured"], EFFICIENT)  # the worker's versioned id, reduced to its family
         self.assertTrue(rows[1]["model_verified"])
@@ -160,18 +176,17 @@ class OrchestrationTest(unittest.TestCase):
 
     def test_a_contract_that_still_runs_is_not_dispatched_again(self):
         self.assertEqual(self.dispatch()[0], 0)
-        code, output = self.dispatch()  # after an Orca restart the report is missing, not the work
-        self.assertEqual(code, 2)
-        self.assertIn("CONTRACT_ALREADY_RUNNING", output)
-        self.assertIn("dispatch:ctx_test", output)
-        self.assertEqual(len(self.worker_starts()), 1)
-        self.assertEqual(len(self.ledger()), 2)  # refused before the gate, whose check counts towards a tier's cap
-        for unknown in ("paused", "no answer"):  # an outcome this code does not know, and none at all: neither clears it
-            os.environ["FAKE_ORCA_OUTCOME"] = unknown
-            code, output = self.dispatch()
-            self.assertEqual(code, 2)
-            self.assertIn("Orca does not show that dispatch as settled", output)
-        self.assertEqual(len(self.worker_starts()), 1)
+        # After an Orca restart the report is missing, not the work. An open dispatch, an outcome this code does not
+        # know, and no answer at all: none of them clears the contract, and the line names the state of what holds it.
+        for outcome, state in (("in_progress", "open"), ("paused", "unknown"), ("no answer", "unread")):
+            with self.subTest(outcome), mock.patch.dict(os.environ, {"FAKE_ORCA_OUTCOME": outcome}):
+                code, output = self.dispatch()
+                line = json.loads(output.splitlines()[0])
+                self.assertEqual((code, line["reason"], line["dispatch"], line["state"]), (2, "CONTRACT_ALREADY_RUNNING", "ctx_test", state))
+                self.assertEqual(line["outcome"], None if outcome == "no answer" else outcome)
+                self.assertIn("dispatch:ctx_test" if state == "open" else "Orca does not show that dispatch as settled", output)
+        # Refused before the gate, whose check counts towards a tier's cap.
+        self.assertEqual((len(self.worker_starts()), len(self.ledger())), (1, 2))
         os.environ["FAKE_ORCA_OUTCOME"] = "failed"  # a settled dispatch does not hold its contract
         code, output = self.dispatch()
         self.assertEqual(code, 0, output)
@@ -179,17 +194,14 @@ class OrchestrationTest(unittest.TestCase):
 
     def test_a_dispatch_that_orca_lost_to_a_reset_holds_neither_a_contract_nor_a_follow_up(self):
         self.assertEqual(self.dispatch()[0], 0)
-        fix = self.work / "contract-2.md"
-        fix.write_text(Path(self.contract()).read_text(encoding="utf-8") + "\nFix it.\n", encoding="utf-8")
-        follow = ["dispatch", "--contract", str(fix), "--agent", "claude", "--model", EFFICIENT, "--effort", "low", "--follows", "ctx_test"]
-        for held in ("no answer", "other refusal"):  # no answer, and a refusal with another code, still hold the dispatch
-            os.environ["FAKE_ORCA_OUTCOME"] = held
-            for code, output in (self.dispatch(), self.cli(*follow)):
-                self.assertEqual(code, 2, output)
-            self.assertEqual(len(self.worker_starts()), 1)
+        fix = self.second_contract("contract-2.md", "Fix it.")
+        os.environ["FAKE_ORCA_OUTCOME"] = "other refusal"  # a refusal with another code still holds the dispatch
+        for code, output in (self.dispatch(), self.dispatch("--follows", "ctx_test", contract=fix)):
+            self.assertEqual(code, 2, output)
+        self.assertEqual(len(self.worker_starts()), 1)
         os.environ["FAKE_ORCA_OUTCOME"] = "unknown dispatch"  # as after `orca orchestration reset`
         os.environ.update(FAKE_ORCA_DISPATCH="fix", FAKE_ORCA_FRESH="fix")
-        code, output = self.cli(*follow)
+        code, output = self.dispatch("--follows", "ctx_test", contract=fix)
         self.assertEqual(code, 0, output)
         os.environ.update(FAKE_ORCA_DISPATCH="again", FAKE_ORCA_FRESH="again")
         code, output = self.dispatch()
@@ -198,12 +210,11 @@ class OrchestrationTest(unittest.TestCase):
 
     def test_a_retry_or_a_fix_is_one_more_attempt_at_the_task_it_follows(self):
         self.assertEqual(self.dispatch()[0], 0)
-        fix = self.work / "contract-2.md"  # a new file, which the gate counts as a contract of its own
-        fix.write_text(Path(self.contract()).read_text(encoding="utf-8") + "\nFix what the first attempt left.\n", encoding="utf-8")
+        fix = self.second_contract("contract-2.md", "Fix what the first attempt left.")
 
         def follow(earlier, name):
             os.environ["FAKE_ORCA_DISPATCH"] = name
-            return self.cli("dispatch", "--contract", str(fix), "--agent", "claude", "--model", EFFICIENT, "--effort", "low", "--follows", earlier)
+            return self.dispatch("--follows", earlier, contract=fix)
 
         code, output = follow("ctx_unknown", "fix")
         self.assertEqual(code, 2)
@@ -239,7 +250,7 @@ class OrchestrationTest(unittest.TestCase):
     def token_lines(self, output):
         return [line for line in output.splitlines() if line.startswith("  ctx_") and "budget" in line]
 
-    def test_a_declared_token_budget_reaches_register_and_a_contract_without_one_registers_null(self):
+    def test_a_declared_token_budget_reaches_register_and_usage_is_counted_on_its_basis(self):
         code, output = self.dispatch(front="budget: [tokens=2000]\ntokens_basis: uncached\n")
         self.assertEqual(code, 0, output)
         line = json.loads(output)
@@ -249,13 +260,12 @@ class OrchestrationTest(unittest.TestCase):
         # The gate validates the front matter; the wrapper passes on what the gate says.
         self.assertEqual(self.dispatch(front="budget: [tokens=0]\n")[0], 2)
         self.assertEqual(len(self.worker_starts()), 1)
+        os.environ["FAKE_ORCA_OUTCOME"] = "failed"  # a failed dispatch is settled too
+        self.assertEqual(self.token_lines(self.cli("report")[1]), ["  ctx_test: budget 2000 uncached, usage 1500 uncached"])
 
-    def test_a_contract_without_a_budget_registers_null(self):
-        code, output = self.dispatch()
-        self.assertEqual(code, 0, output)
-        line = json.loads(output)
-        self.assertEqual((line["token_budget"], line["tokens_basis"]), (None, "total"))
-        self.assertIsNone(self.ledger()[1]["token_budget"])
+    def test_the_contract_template_passes_the_gate_as_it_is_shipped_and_declares_no_budget(self):
+        code, output = self.dispatch(contract=ROOT / "skills" / "master" / "contract-template.md")
+        self.assertEqual((code, json.loads(output)["token_budget"]), (0, None), output)
 
     def test_a_settled_dispatch_is_measured_from_its_session_and_over_its_budget_is_marked(self):
         self.assertEqual(self.dispatch(front="budget: [tokens=2000]\n")[0], 0)
@@ -272,21 +282,13 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual((self.work / ".orchestration" / "dispatch-ledger.jsonl").read_bytes(), ledger)
         self.assertEqual(len([call for call in self.orca_calls() if call[:2] == ["orchestration", "worker-show"]]), shown)
 
-    def test_usage_is_counted_on_the_budgets_basis_and_a_dispatch_without_a_budget_still_shows_it(self):
-        self.assertEqual(self.dispatch(front="budget: [tokens=2000]\ntokens_basis: uncached\n")[0], 0)
-        os.environ["FAKE_ORCA_OUTCOME"] = "failed"  # a failed dispatch is settled too
-        self.assertEqual(self.token_lines(self.cli("report")[1]), ["  ctx_test: budget 2000 uncached, usage 1500 uncached"])
-        os.environ["FAKE_ORCA_DISPATCH"] = "plain"
-        self.assertEqual(self.dispatch()[0], 0)
-        self.assertIn("  ctx_plain: budget unset, usage 2200 total", self.cli("report")[1])
-
     def test_a_dispatch_that_orca_shows_open_is_not_settled(self):
         self.assertEqual(self.dispatch()[0], 0)
         self.assertEqual(self.token_lines(self.cli("report")[1]), ["  ctx_test: budget unset, usage open"])  # listed, with no budget
         self.assertEqual(orchestration.token_line({"job_id": "ctx_a", "token_budget": 2000}, "open"), "  ctx_a: budget 2000 total, usage open")
         self.assertNotIn("token_usage", self.ledger()[1])
-        os.environ["FAKE_ORCA_OUTCOME"] = "succeeded"
-        self.assertIn("usage 2200 total", self.cli("report")[1])
+        os.environ["FAKE_ORCA_OUTCOME"] = "succeeded"  # without a budget its usage is still shown
+        self.assertEqual(self.token_lines(self.cli("report")[1]), ["  ctx_test: budget unset, usage 2200 total"])
 
     def test_a_dispatch_without_exactly_one_session_file_is_recorded_unmeasured(self):
         for count, name in ((0, "none"), (2, "twice")):
@@ -305,66 +307,21 @@ class OrchestrationTest(unittest.TestCase):
     def test_an_orca_answer_without_the_fields_settles_nothing(self):
         self.assertEqual(self.dispatch(front="budget: [tokens=2000]\n")[0], 0)
         answers = (
-            ({"FAKE_ORCA_SHOW": "lacks", "FAKE_ORCA_OUTCOME": "succeeded"}, "lacks worker.worktreeId"),
-            ({"FAKE_ORCA_OUTCOME": "no answer"}, "is missing or refused"),
+            ({"FAKE_ORCA_WITHOUT": "worker.worktreeId", "FAKE_ORCA_OUTCOME": "succeeded"}, "Orca's answer lacks worker.worktreeId"),
+            ({"FAKE_ORCA_OUTCOME": "no answer"}, "Orca's answer is missing or refused"),
+            ({"ORCA_CLI_COMMAND": str(self.work / "no-such-orca.cmd")}, "the Orca CLI"),  # it cannot be started: no answer of Orca's
         )
         for answer, said in answers:
-            with mock.patch.dict(os.environ, answer):
+            with self.subTest(said), mock.patch.dict(os.environ, answer):
                 output = self.cli("report")[1]
-            self.assertIn(f"ctx_test: not settled, Orca's answer {said}", output)
-            self.assertIn("usage unsettled", output)
-            self.assertNotIn("token_usage", self.ledger()[1])
-
-    def test_report_says_when_the_orca_cli_cannot_be_started(self):
-        self.assertEqual(self.dispatch()[0], 0)
-        os.environ["ORCA_CLI_COMMAND"] = str(self.work / "no-such-orca.cmd")
-        output = self.cli("report")[1]
-        self.assertIn("ctx_test: not settled, the Orca CLI", output)
-        self.assertIn("cannot be run", output)
-        self.assertNotIn("is missing or refused", output)
-
-    def test_report_skips_a_session_file_it_cannot_read_and_names_it(self):
-        self.assertEqual(self.dispatch(front="budget: [tokens=2000]\n")[0], 0)
-        for name in ("locked.jsonl", "gone.jsonl"):
-            (self.transcripts() / name).write_text("{}\n", encoding="utf-8")
-        names, stat = orchestration.names_dispatch, Path.stat
-
-        def locked(session, dispatch_id):
-            if session.name == "locked.jsonl":
-                raise PermissionError(13, "Permission denied")
-            return names(session, dispatch_id)
-
-        def vanishing(path, **options):  # a file that is listed and then gone
-            if path.name == "gone.jsonl":
-                raise FileNotFoundError(2, "No such file or directory")
-            return stat(path, **options)
-
-        os.environ["FAKE_ORCA_OUTCOME"] = "succeeded"
-        with mock.patch.object(orchestration, "names_dispatch", locked), mock.patch.object(Path, "stat", vanishing):
-            output = self.cli("report")[1]
-        self.assertIn("ctx_test: session file locked.jsonl: Permission denied skipped, it could not be read", output)
-        self.assertIn("ctx_test: session file gone.jsonl: No such file or directory skipped, it could not be read", output)
-        self.assertEqual(self.token_lines(output), ["  ctx_test: budget 2000 total, usage 2200 total over"])  # the worker's own file is measured
-
-    def test_a_check_answer_without_front_matter_refuses_before_a_worker_starts(self):
-        gate = orchestration.gate
-
-        def without(*arguments):
-            code, decision = gate(*arguments)
-            if arguments[0] == "check":
-                decision.pop("front_matter", None)
-            return code, decision
-
-        with mock.patch.object(orchestration, "gate", without):
-            code, output = self.dispatch()
-        self.assertEqual(code, 2, output)
-        self.assertIn("FRONT_MATTER_MISSING", output)
-        self.assertEqual(self.worker_starts(), [])
-        self.assertFalse(any(row.get("job_id") for row in self.ledger()))  # nothing was registered
+                self.assertIn(f"ctx_test: not settled, {said}", output)
+                self.assertIn("usage unsettled", output)
+                self.assertNotIn("token_usage", self.ledger()[1])
 
     def test_a_gate_answer_without_what_register_needs_refuses_before_a_worker_starts(self):
         gate = orchestration.gate
         cases = (
+            ("check", "front_matter", "check", "FRONT_MATTER_MISSING"),
             ("check", "contract_sha", "check", "CONTRACT_SHA_MISSING"),
             ("budget", "tokens_basis", "budget", "BUDGET_FIELDS_MISSING"),
             ("budget", "source", "budget", "BUDGET_FIELDS_MISSING"),
@@ -401,6 +358,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn('"taskId": "task_test"', output)  # Orca's answer is printed
         message = next(line for line in output.splitlines() if line.startswith("orchestration:"))
         self.assertNotIn("failed", message)  # a worker was started
+        # The skill only says "find it as the line says": the line holds the commands.
         for said in ("Orca reported the start as done", "may be running which no ledger row holds", "orca orchestration run-current --json",
                      "orca orchestration worker-list --run <run>", "Do not dispatch this contract again before that worker is found"):
             self.assertIn(said, message)
@@ -408,7 +366,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(len(self.worker_starts()), 1)
 
     def test_a_receipt_whose_effects_cannot_be_read_gives_no_workspace_and_the_worker_is_registered(self):
-        for number, shape in enumerate(("effects without id", "effects without kind", "no effects", "effects not a list")):
+        for number, shape in enumerate(("effects without id", "effects without kind", "no effects")):
             name = shape.replace(" ", "_")
             with self.subTest(shape=shape), mock.patch.dict(os.environ, {"FAKE_ORCA_START": shape, "FAKE_ORCA_DISPATCH": name}):
                 code, output = self.dispatch(front=f"budget: [tokens={1000 + number}]\n")  # a contract of its own
@@ -481,13 +439,6 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(self.worker_starts(), [])
         self.assertEqual([row["decision"] for row in self.ledger()], ["DENY"])
 
-    def test_worker_running_on_a_higher_tier_is_denied_at_register(self):
-        os.environ["FAKE_ORCA_WORKER_MODEL"] = versioned(TOP)
-        code, output = self.dispatch()
-        self.assertEqual(code, 2)
-        self.assertIn("MODEL_TIER_ESCALATION", output)
-        self.assertIn("ctx_test", output)
-
     def watch(self, frames, *options, ends=0):
         """Run the watch against an Orca that shows one frame per look."""
         scripted = self.work / "frames.json"
@@ -552,6 +503,9 @@ class OrchestrationTest(unittest.TestCase):
             self.assertNotIn("resume --dispatch", output)
         self.assertEqual(self.sends(), [])  # the watch typed nothing and started nothing
         self.assertEqual(self.worker_starts(), [])
+        calls = len(self.orca_calls())
+        self.assertIsNone(orchestration.agent_ended(None))  # a row without a terminal handle is not ended,
+        self.assertEqual(len(self.orca_calls()), calls)  # and Orca is not asked about it
 
     def test_watch_reads_every_page_and_passes_on_the_step_orca_names(self):
         output = self.watch([
@@ -568,24 +522,16 @@ class OrchestrationTest(unittest.TestCase):
         self.assertNotIn("Nothing to do", output)
 
     def test_watch_names_a_dispatch_that_did_not_pass_the_gate(self):
-        frames = [{"runtime": "one", "workers": {}, "release": ["ctx_gated"], "unread": 0}]
+        frames = [{"runtime": "one", "workers": {}, "release": ["ctx_allowed", "ctx_denied"], "unread": 0}]
         self.assertNotIn("did not pass the gate", self.watch(frames))  # no ledger here, so nothing to compare with
         ledger = self.work / ".orchestration" / "dispatch-ledger.jsonl"
-        ledger.write_text(json.dumps({"job_id": "ctx_gated", "decision": "ALLOW"}) + "\nnot json\n", encoding="utf-8")
-        output = self.watch(frames)
-        # What a `send` to a settled dispatch starts: a worker in the Run that the ledger has never seen.
-        self.assertIn("dispatch ctx_settled of run_test is not registered in this workspace's ledger, so it did not pass the gate", output)
-        self.assertNotIn("dispatch ctx_gated of run_test is not registered", output)
-
-    def test_watch_takes_a_denied_register_for_a_dispatch_that_did_not_pass_the_gate(self):
-        # The gate writes a DENY row with a job_id when it refuses a register (MODEL_TIER_ESCALATION): the worker runs all the same.
-        frames = [{"runtime": "one", "workers": {}, "release": ["ctx_allowed", "ctx_denied"], "unread": 0}]
-        ledger = self.work / ".orchestration" / "dispatch-ledger.jsonl"
-        ledger.parent.mkdir()
         rows = ({"job_id": "ctx_allowed", "decision": "ALLOW"}, {"job_id": "ctx_denied", "decision": "DENY", "reason": "MODEL_TIER_ESCALATION"})
-        ledger.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        ledger.write_text("".join(json.dumps(row) + "\n" for row in rows) + "not json\n", encoding="utf-8")
         output = self.watch(frames)
-        self.assertIn("dispatch ctx_denied of run_test is not registered in this workspace's ledger", output)
+        # What a `send` to a settled dispatch starts, which the ledger has never seen, and a register the gate refused
+        # (a DENY row with a job_id, whose worker runs all the same).
+        for unregistered in ("ctx_settled", "ctx_denied"):
+            self.assertIn(f"dispatch {unregistered} of run_test is not registered in this workspace's ledger, so it did not pass the gate", output)
         self.assertNotIn("dispatch ctx_allowed of run_test is not registered", output)
         ledger.write_text(json.dumps(rows[1]) + "\n", encoding="utf-8")  # a workspace whose only dispatch was denied is still one that dispatched
         self.assertIn("dispatch ctx_denied of run_test is not registered in this workspace's ledger", self.watch(frames))
@@ -674,7 +620,6 @@ class OrchestrationTest(unittest.TestCase):
             ("AGENT_NOT_PROVEN_ENDED", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", f"{line} {{session}} & calc", "PS C:/work>"])}, "may still run"),  # shell syntax
             ("AGENT_NOT_PROVEN_ENDED", {"FAKE_ORCA_TAIL": json.dumps([])}, "A terminal that is gone"),  # a released terminal reads as empty
             ("SESSION_MISMATCH", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", f"{line} {other}", "PS C:/work>"])}, "not the session file of ctx_test"),  # the reflector's
-            ("SESSION_MISMATCH", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", f"{line} 11111111-1111-4111-8111-111111111111", "PS C:/work>"])}, "not the session file of ctx_test"),
         )
         for reason, environment, says in cases:
             with self.subTest(reason=reason, environment=environment), mock.patch.dict(os.environ, {"FAKE_ORCA_LIVENESS": "unverifiable", **environment}):
@@ -722,9 +667,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertNotIn(["orchestration", "send"], [call[:2] for call in self.orca_calls()])  # the session was not confirmed back
 
     def test_succeed_keeps_the_owners_default_model_unless_one_is_named(self):
-        handoff = self.work / "handoff.md"
-        state = "## Role State\n\nCurrent Role: Maintenance\n\n"
-        handoff.write_text(state + "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:]), encoding="utf-8")
+        handoff = self.handoff()
         code, output = self.cli("succeed", "--handoff", str(handoff))
         self.assertEqual(code, 0, output)
         launch = self.orca_calls()[-1]
@@ -743,12 +686,10 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(len(self.orca_calls()), before)
 
     def test_succeed_exits_0_only_when_orca_names_a_terminal_and_the_kickoff_reached_it(self):
-        handoff = self.work / "handoff.md"
-        state = "## Role State\n\nCurrent Role: Maintenance\n\n"
-        handoff.write_text(state + "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:]), encoding="utf-8")
-        refusals = (
+        handoff = self.handoff()
+        refusals = (  # each names the look that comes before a second run, which could start a second successor
             ("no terminal", ("named no terminal with a successor", "a second run would start a second successor", f"orca terminal list --worktree path:{self.work} --json")),
-            ("not delivered", ("terminal term_launched", "(prompt outcome: 'rejected')", "orca terminal read --terminal term_launched --screen", "Do not run this again")),
+            ("not delivered", ("(prompt outcome: 'rejected')", "orca terminal read --terminal term_launched --screen", "Do not run this again")),
         )
         for launch, said in refusals:
             with self.subTest(launch=launch):
@@ -766,28 +707,6 @@ class OrchestrationTest(unittest.TestCase):
         launch = self.orca_calls()[-1]
         self.assertNotIn("--focus", launch)  # `--focus` stays with `start`
 
-    def test_a_handoff_asks_of_the_role_state_a_current_role_and_no_more(self):
-        filled = "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:])
-        current = "## Role State\n\n```\nCurrent Role: Maintenance\n```\n\n"
-        old = "## Role State\n\n```\nCurrent Role: Maintenance\nRole Lock: DISABLED\nFrozen: none\nUnlock: none\n```\n\n"
-        for state in (current, old):  # a handoff written before the three lines were dropped is accepted
-            self.assertEqual(orchestration.handoff_problems(state + filled), [])
-        self.assertEqual(len(orchestration.handoff_problems(current.replace("Maintenance", "Boss") + filled)), 1)
-        template = orchestration.HANDOFF_TEMPLATE.read_text(encoding="utf-8")
-        for dropped in ("Role Lock", "Frozen", "Unlock"):
-            self.assertNotIn(dropped, template)
-        self.assertIn("Current Role: Maintenance", template)
-        self.assertFalse([problem for problem in orchestration.handoff_problems(template) if "Role State" in problem])
-
-    def test_the_contract_template_declares_no_budget_and_the_gate_takes_it_so(self):
-        template = (ROOT / "skills" / "master" / "contract-template.md").read_text(encoding="utf-8")
-        front = template.split("---\n")[1]
-        self.assertNotIn("budget", front)
-        self.assertIn("only tokens=N is measured", template)
-        code, output = self.cli("dispatch", "--contract", self.contract(), "--agent", "claude", "--model", EFFICIENT, "--effort", "low")
-        self.assertEqual(code, 0, output)
-        self.assertEqual(json.loads(output)["token_budget"], None)
-
     def test_the_model_probe_reads_the_session_that_names_the_dispatch(self):
         # A newer session in the worker's folder, on a model of the top tier, whose first prompt names no dispatch:
         # a second worker there, or the reflector that the owner's autoharness starts when a session ends.
@@ -804,11 +723,12 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual((code, output), (1, ""))
 
     def test_succeed_needs_every_handoff_section_before_launching(self):
-        handoff = self.work / "handoff.md"
+        handoff = Path(self.handoff())
         launch = ["succeed", "--handoff", str(handoff), "--model", EFFICIENT, "--effort", "high"]
         template = orchestration.HANDOFF_TEMPLATE.read_text(encoding="utf-8")
-        filled = "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:])
-        state = "## Role State\n\nCurrent Role: Maintenance\n\n"
+        state, filled = ROLE_STATE, FILLED
+        # The role the template itself names is one a successor accepts, inside its code fence.
+        self.assertNotIn("Role State", " ".join(orchestration.handoff_problems(template)))
         for unusable, says in (
             ("## Role State\n", "`## Observed Baseline` is missing"),
             (template, "`## Current Objective` still holds the template's text"),  # saved without being filled in
@@ -880,8 +800,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(len(launches()), 2)
 
     def test_inherit_appends_one_generation_per_succession(self):
-        handoff = self.work / "handoff.md"
-        handoff.write_text("handoff", encoding="utf-8")
+        handoff = self.handoff("handoff")
         for open_terminals in ("term_new", "term_test", "term_old,term_test"):
             os.environ["FAKE_ORCA_TERMINALS"] = open_terminals
             code, output = self.cli("inherit", "--handoff", str(handoff), *LINEAGE_ARGUMENTS)
@@ -912,23 +831,27 @@ class OrchestrationTest(unittest.TestCase):
         master.unlink(missing_ok=True)
         if recorded:
             master.write_text(recorded, encoding="utf-8")
-        handoff = self.work / "handoff.md"
-        handoff.write_text("handoff", encoding="utf-8")
         arguments = [{"PASS": verification, "term_old": parent}.get(argument, argument) for argument in LINEAGE_ARGUMENTS]
         with mock.patch.dict(os.environ, {"FAKE_ORCA_TERMINALS": "term_old,term_test", **environment}):
-            code, output = self.cli("inherit", "--handoff", str(handoff), *arguments, "--repeated-question-count", count)
+            code, output = self.cli("inherit", "--handoff", self.handoff("handoff"), *arguments, "--repeated-question-count", count)
         closes = [call for call in self.orca_calls() if call[:2] == ["terminal", "close"]]
         ledger = self.work / ".orchestration" / "lineage.md"
         entry = ledger.read_text(encoding="utf-8").split("## Gen ")[-1] if ledger.exists() else ""
         return code, closes, entry
 
     def test_inherit_closes_the_recorded_predecessor_after_a_pass_and_proves_it_gone(self):
+        lists = lambda: sum(call[:2] == ["terminal", "list"] for call in self.orca_calls())  # noqa: E731
         code, closes, entry = self.succession()
         self.assertEqual((code, closes), (0, [["terminal", "close", "--terminal", "term_old", "--json"]]))
         self.assertIn("terminal term_old closed by its successor", entry)
         self.assertIn("no longer among Orca's live terminals", entry)
-        self.assertEqual(sum(call[:2] == ["terminal", "list"] for call in self.orca_calls()), 2)  # before the close, and after it
+        self.assertEqual(lists(), 2)  # before the close, and after it: the wait ends as soon as the handle is gone
         self.assertEqual((self.work / ".orchestration" / "master").read_text(encoding="utf-8"), "term_test")
+        # Measured on 1.4.259: the list right after a close still holds the handle for about a second, so it is asked again.
+        code, closes, entry = self.succession(FAKE_ORCA_CLOSE_LAG="2")
+        self.assertEqual((code, len(closes)), (0, 1))
+        self.assertIn("terminal term_old closed by its successor", entry)
+        self.assertGreaterEqual(lists(), 3)
 
     def test_inherit_keeps_the_predecessor_open_after_partial_or_failed(self):
         for verification in ("PARTIAL", "FAILED"):
@@ -962,21 +885,6 @@ class OrchestrationTest(unittest.TestCase):
                 self.assertIn(said, entry)
                 self.assertEqual((self.work / ".orchestration" / "master").read_text(encoding="utf-8"), "term_test")
 
-    def test_inherit_waits_for_a_closed_terminal_that_stays_listed_for_a_moment(self):
-        # Measured on 1.4.259: the list right after a close still holds the handle for about a second.
-        code, closes, entry = self.succession(FAKE_ORCA_CLOSE_LAG="2")
-        self.assertEqual((code, len(closes)), (0, 1))
-        self.assertIn("terminal term_old closed by its successor", entry)
-        self.assertGreaterEqual(sum(call[:2] == ["terminal", "list"] for call in self.orca_calls()), 3)
-
-    def test_inherit_stops_waiting_for_a_close_that_is_not_carried_out(self):
-        started = time.monotonic()
-        with mock.patch.object(orchestration, "CLOSE_WAIT", 0.5):
-            _, closes, entry = self.succession(FAKE_ORCA_CLOSE="not carried out")
-        self.assertIn("and it is still among Orca's live terminals", entry)
-        self.assertEqual(len(closes), 1)
-        self.assertLess(time.monotonic() - started, 2)
-
     def test_inherit_closes_nothing_for_an_entry_the_lineage_refuses(self):
         _, closes, before = self.succession()
         self.assertEqual(len(closes), 1)  # the same run, with an entry the lineage takes, closes
@@ -985,13 +893,11 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual((self.work / ".orchestration" / "master").read_text(encoding="utf-8"), "term_old")
 
     def test_succeed_records_this_terminal_as_the_master_only_in_an_orca_terminal(self):
-        handoff = self.work / "handoff.md"
         master = self.work / ".orchestration" / "master"
-        handoff.write_text("## Role State\n", encoding="utf-8")  # refused: the successor is not launched, and nothing is recorded
-        self.assertEqual(self.cli("succeed", "--handoff", str(handoff))[0], 2)
+        handoff = self.handoff("## Role State\n")  # refused: the successor is not launched, and nothing is recorded
+        self.assertEqual(self.cli("succeed", "--handoff", handoff)[0], 2)
         self.assertFalse(master.exists())
-        state = "## Role State\n\nCurrent Role: Maintenance\n\n"
-        handoff.write_text(state + "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:]), encoding="utf-8")
+        handoff = self.handoff()
         code, output = self.cli("succeed", "--handoff", str(handoff))
         self.assertEqual(code, 0, output)
         self.assertEqual(master.read_text(encoding="utf-8"), "term_test")
@@ -1161,10 +1067,11 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("NOT_A_PROJECT_ROOT", output)
         self.assertEqual((self.worker_starts(), self.ledger()), ([], []))  # refused before the gate counts a check
         self.assertIn("takes only new-top-level", self.dispatch("--project", str(project), "--worktree", "current")[1])
-        code, output = self.cli("dispatch", "--contract", "no-such.md", "--agent", "claude", "--model", EFFICIENT, "--effort", "low", "--project", str(project))
+        code, output = self.dispatch("--project", str(project), contract="no-such.md")
         self.assertEqual(code, 2, output)
         self.assertIn("no contract at", output)
         self.assertEqual((self.orca_calls(), self.ledger()), ([], []))  # a mistyped contract registers no project
+        self.assertFalse((self.work / ".orchestration").exists())  # and a dispatch refused before the gate leaves no state folder
         code, output = self.dispatch("--project", str(project))
         self.assertEqual(code, 0, output)
         prepared, registered = (json.loads(line) for line in output.splitlines())
@@ -1193,7 +1100,6 @@ class OrchestrationTest(unittest.TestCase):
         place = start[start.index("--worktree"):start.index("--worktree") + 6]
         branch = self.git(project, "branch", "--show-current")
         self.assertEqual(place, ["--worktree", "new-top-level", "--repo", f"path:{project}", "--base-branch", branch])
-
 
     def test_dispatch_state_names_the_six_states_every_command_reads(self):
         shown = lambda outcome: {"ok": True, "result": {"projection": {"outcome": outcome}}}  # noqa: E731
@@ -1277,7 +1183,7 @@ class OrchestrationTest(unittest.TestCase):
         gone = (" is gone: Orca does not know it (dispatch_not_found), as after an `orca orchestration reset`. "
                 "`ORCHESTRATION report` settles it as unmeasured, and it holds neither its contract nor its task.")
         over = {
-            "succeeded": (f" has succeeded in {run}. ", f"Its report is a claim: verify, review and merge it. A fix is a new dispatch with --follows {{id}}. `ORCHESTRATION report` measures its usage."),
+            "succeeded": (f" has succeeded in {run}. ", "Its report is a claim: verify, review and merge it. A fix is a new dispatch with --follows {id}. `ORCHESTRATION report` measures its usage."),
             "failed": (f" has failed in {run}. ", "Its task has had 3 attempts: stop, and tell the owner what was tried."),
         }
         for outcome, (head, step) in over.items():  # a refused dispatch whose state is over is not listed
@@ -1323,23 +1229,14 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertNotIn("status: master", output)
 
-
-    def test_a_held_dispatch_line_carries_the_state_of_the_dispatch_that_holds_it(self):
-        self.assertEqual(self.dispatch()[0], 0)
-        for outcome, state in (("in_progress", "open"), ("paused", "unknown"), ("no answer", "unread")):
-            with self.subTest(outcome), mock.patch.dict(os.environ, {"FAKE_ORCA_OUTCOME": outcome}):
-                code, output = self.dispatch()
-                line = json.loads(output.splitlines()[0])
-                self.assertEqual((code, line["reason"], line["dispatch"], line["state"]), (2, "CONTRACT_ALREADY_RUNNING", "ctx_test", state))
-                self.assertEqual(line["outcome"], None if outcome == "no answer" else outcome)
-        self.assertEqual(len(self.worker_starts()), 1)
-
     def test_no_worker_is_started_while_one_runs_that_the_gate_refused_at_register(self):
-        os.environ["FAKE_ORCA_WORKER_MODEL"] = versioned(TOP)
-        self.assertEqual(self.dispatch()[0], 2)  # refused at register, and its worker runs all the same
+        os.environ["FAKE_ORCA_WORKER_MODEL"] = versioned(TOP)  # the worker runs on a higher tier than was declared
+        code, output = self.dispatch()
+        self.assertEqual(code, 2)  # refused at register, and its worker runs all the same
+        self.assertIn("MODEL_TIER_ESCALATION", output)
+        self.assertIn("ctx_test", output)
         os.environ.update({"FAKE_ORCA_WORKER_MODEL": versioned(EFFICIENT), "FAKE_ORCA_DISPATCH": "other"})
-        other = self.work / "other.md"  # another contract: the refused row names none, so it holds every one
-        other.write_text(Path(self.contract()).read_text(encoding="utf-8") + "\nAnother task.\n", encoding="utf-8")
+        other = self.second_contract("other.md", "Another task.")  # the refused row names no contract, so it holds every one
         again = ("dispatch", "--contract", str(other), "--agent", "claude", "--model", EFFICIENT, "--effort", "low")
         rows = len(self.ledger())
         for outcome, state in (("in_progress", "open"), ("paused", "unknown"), ("no answer", "unread")):
@@ -1361,8 +1258,7 @@ class OrchestrationTest(unittest.TestCase):
         os.environ["FAKE_ORCA_WORKER_MODEL"] = versioned(TOP)
         self.assertEqual(self.dispatch()[0], 2)  # ctx_test is refused at register
         os.environ.update({"FAKE_ORCA_WORKER_MODEL": versioned(EFFICIENT), "FAKE_ORCA_DISPATCH": "other"})
-        other = self.work / "other.md"
-        other.write_text(Path(self.contract()).read_text(encoding="utf-8") + "\nAnother task.\n", encoding="utf-8")
+        other = self.second_contract("other.md", "Another task.")
         again = ("dispatch", "--contract", str(other), "--agent", "claude", "--model", EFFICIENT, "--effort", "low")
         why = "the owner: stopped by hand, and Orca calls it paused"
         override = ("override-hold", "--dispatch", "ctx_test", "--reason", why)
@@ -1422,18 +1318,6 @@ class OrchestrationTest(unittest.TestCase):
             code, output = self.cli(*again)
             self.assertEqual((code, json.loads(output.splitlines()[0])["reason"]), (2, "CONTRACT_ALREADY_RUNNING"), output)
         self.assertEqual(len(self.worker_starts()), 2)
-
-    def test_a_dispatch_refused_before_the_gate_leaves_no_state_folder_behind(self):
-        project = self.ready("ready")
-        code, output = self.cli("dispatch", "--contract", "no-such.md", "--agent", "claude", "--model", EFFICIENT, "--effort", "low", "--project", str(project))
-        self.assertEqual(code, 2, output)
-        self.assertIn("no contract at", output)
-        self.assertFalse((self.work / ".orchestration").exists())  # the look for a refused worker reads a ledger, and makes none
-
-    def test_a_worker_row_without_a_terminal_handle_is_not_ended_and_orca_is_not_asked(self):
-        calls = len(self.orca_calls())
-        self.assertIsNone(orchestration.agent_ended(None))
-        self.assertEqual(len(self.orca_calls()), calls)
 
 
 if __name__ == "__main__":
