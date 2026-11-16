@@ -190,8 +190,8 @@ a repeated wake is the whole answer, not an error.
 - `... has settled and its mail is read`: nothing is left to wait for. What the workers reported is still
   yours to review and merge. A line that names a command for a settled dispatch (`Orca names a next step`,
   `Orca keeps its terminal open`) is for after that: run the command only once you no longer need that
-  worker, its branch merged or given up. Its worktree and branch stay. Name them in your report, because
-  removing them is the owner's decision.
+  worker, its branch merged or given up. Its workspace and branch stay until the merge rule under "When a
+  worker reports" removes them; name every one that stays in your report.
 - The watch failed (`no usable answer`, `lists no dispatch`, `cannot be run`): nothing watches the Run,
   and waiting does not mend it. Fix what the line says and start the watch again.
 
@@ -239,7 +239,12 @@ a repeated wake is the whole answer, not an error.
   there is in no diff you can review from your checkout. The contract template asks for it.
 - Merge an accepted branch in the project's own checkout with a merge commit, so that the worker's commits
   stay as it made them: `git -C <project> merge --no-ff <branch>`. Run the project's whole test suite after the merge, then
-  release the worker as the watch names it. Never push.
+  release the worker as the watch names it, then remove the worker's own workspace, never with `--force`:
+  `orca worktree rm --worktree path:<workspace of the dispatch line> --delete-branch --json`. Orca refuses a workspace
+  with uncommitted or untracked files (it names them) and keeps a branch that holds an unmerged commit
+  (`preservedBranch`): name either in your report and leave it to the owner, as every workspace whose work was not
+  merged. A worker that ran in your own workspace or in a project's own checkout has none to remove. Measured on Orca
+  1.4.259 on 2026-11-16, without `--force`. Never push.
 
 ## After an Orca restart
 
@@ -284,8 +289,10 @@ the owner that one is due, then write it.
    No terminal named (exit 2): look with `orca terminal list --worktree path:<folder> --json` before a second run,
    which could start a second successor. A terminal named and the kickoff not delivered (exit 2): read its screen
    with `orca terminal read --terminal <handle> --screen`, and do not run `succeed` again.
-3. Stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner the
-   successor is up, then stop working. Closing your terminal is the owner's decision.
+3. Stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner in one
+   line that the successor is up, then stop working. Your terminal closes once the successor has recorded the
+   succession with `PASS`, which came 27 seconds after the launch when it was measured (2026-11-16), before the
+   predecessor had written its closing message: say what the owner must hear from you before step 2.
 
 As the successor: read the handoff, take over the Run if the kickoff names one, then record the
 succession with one command:
@@ -298,9 +305,12 @@ ORCHESTRATION inherit --handoff <file> --verification PASS|PARTIAL|FAILED --pare
   give its session name as `--parent-session`, or any name for it where the handoff holds none.
 - Use `PASS` only if you can restate the objective, the open tracks and the role state from the handoff
   alone, `PARTIAL` if you had to ask for something again, and `FAILED` if the handoff was unusable.
-- If `inherit` prints `not verified (...)`, the predecessor's terminal is still open or Orca's list could
-  not prove otherwise: say so in your report, because two masters on one Run both take its mail. Closing
-  that terminal is the owner's decision, not yours.
+- A `PASS` closes the predecessor's terminal, because two masters on one Run both take its mail and the owner
+  can still type into the old one. Only the terminal that the workspace's own record (`.orchestration/master`,
+  written by `succeed`) and the kickoff both name is closed; the session's transcript stays on disk. A dispatch
+  the predecessor started stays open through the close, and its report reaches the Run you took over (one
+  scratch dispatch on Orca 1.4.259, 2026-11-16). After `PARTIAL` or `FAILED` the terminal stays open. A line that
+  starts with `not verified (` or `kept open (` goes into your report with the command it names.
 - Report what you inherited to the owner, before any other work. After `PASS`, do not end your turn on
   that report: nobody answers it, and an idle successor stalls the work. Carry on with the next step the
   handoff names, unless the handoff says that step waits for the owner, and start your own watch if the

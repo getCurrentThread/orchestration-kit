@@ -51,7 +51,7 @@ of `tests/fake_orca.py` and in `skills/master/SKILL.md`.
 | `dispatch`: `CONTRACT_ALREADY_RUNNING` | `master-ops/scripts/dispatch-collision-check`. Upstream warns about overlapping scopes; here the very same contract is refused until Orca shows its dispatch settled |
 | `dispatch --follows` and the cap of three attempts at one task | The gate's `--card` column and `docs/en/resident-orchestrator-loop.md` of mogui-agent-harness. The card is the Orca Task of the task's first dispatch |
 | `succeed`: `Current Role` is one of the roles, and a section is neither empty nor still the template's. `Role Lock`, `Frozen` and `Unlock` are not asked for: nothing here reads them, where upstream gives them force with a hook | `bootstrap.py` (`VALID_ROLES`). Checked when the handoff is written, not when the successor boots |
-| `inherit`: whether the predecessor's terminal is still open | `succession.py` (`detect_duplicate_instances`, `retire_predecessor`). Nothing is closed here: that stays the owner's decision |
+| `inherit`: retiring the predecessor after a recorded `PASS` | `succession.py` (`detect_duplicate_instances`, `retire_predecessor`). Upstream retires it with a handshake and `ps`. Here `succeed` writes its terminal's handle to `.orchestration/master`, `inherit` asks Orca to close that terminal only after a `PASS`, and an `orca terminal list` without that handle, asked for up to ten seconds after the close, is the proof. After `PARTIAL` or `FAILED` it stays open |
 | `hooks/hooks.json` with `compacted` | `master-ops/scripts/compaction-probe.sh`. No recall quiz and no log |
 | `report` | `scripts/dispatch-gate report`, vendored: a pass-through, followed by every task with more than one attempt |
 | `dispatch` and `report`: the token budget and its measured usage | `resolve_token_budget`, the budget paragraph of the worker prompt, and the settlement at `worker_done` or `reap` in `master-ops/scripts/dispatch`. `dispatch` passes the `front_matter` of the gate's `check` to the gate's `budget` and the result to `register` (`token_budget` and `tokens_basis` are on the dispatch line). The paragraph is a sentence in the contract template, since the contract file is the worker's prompt. Upstream settles from the session record the worker names in `worker_done`; here `report` settles each dispatch Orca shows as settled, from the one session file born in the worker's folder after the dispatch whose first prompt names it (none or several: `unmeasured`), and lists an open one as `open`. A count is the worker's main session only: its subagents' turns are in files of their own |
@@ -84,8 +84,10 @@ Looked at again on 2026-11-15 and left out (upstream pull requests in brackets):
 - Putting the work layer back after a compaction (#274, `compact-rehydration-hook.sh`): 612 lines of bash on
   PostToolUse and UserPromptSubmit of every session. `hooks/hooks.json` here stays silent outside the master's
   session, and `compacted` with the handoff covers the master.
-- `worker-reap` reclaiming by worktree and proving squash landings (#273, #295): it closes terminals and removes
-  worktrees, which stays the owner's decision here. The file is vendored only because the gate imports it.
+- `worker-reap` reclaiming by worktree and proving squash landings (#273, #295): still left out. The master releases a
+  worker and, once its work is merged, removes the worker's workspace with Orca's own commands (`orca worktree rm`
+  without `--force`, which refuses uncommitted files and keeps an unmerged branch), as the master skill says; whatever
+  is not merged stays the owner's decision. The file is vendored only because the gate imports it.
 - The shared git directory as a writable root for Codex, git escalation events, the push destination in Codex
   briefs (#294, #304) and pre-trusting Antigravity worktrees (#269): the one ledger found on this machine on
   2026-11-15 holds Claude workers only, and workers never push here.
