@@ -12,6 +12,7 @@ Run from the workspace root as `python -X utf8 -s -B orchestration.py <command>`
             overrides, token budgets and usage
   resume    bring back the Claude session of a worker whose agent ended without a report, in its own terminal and
             for its own dispatch
+  status    say where every dispatch that `report` has not measured stands, and the step it waits for (only reads)
 
 State is kept in ./.orchestration/ of the current directory.
 """
@@ -56,6 +57,7 @@ HANDOFF_HEADINGS = (
 # them, stopped and abandoned workers included). Any other outcome is read as open, so that a new one is never
 # taken for "settled".
 SETTLED = ("succeeded", "failed")
+HELD = ("open", "unknown", "unread")  # the states of a dispatch that `dispatch` still holds a contract and a task for
 ATTEMPTS = 3  # at one task; a fourth rarely differs from the third, and the contract or the task has to change
 OPEN_SECONDS = 120  # for `orca open` to bring the app up
 HANDOFF_TEMPLATE = ROOT / "skills" / "master" / "handoff-template.md"
@@ -217,6 +219,47 @@ def ledger_rows() -> list[dict]:
     return rows
 
 
+def registered() -> list[dict]:
+    """Return the ledger's registered dispatches: the rows with a `job_id` whose decision is ALLOW.
+
+    A DENY row has a `job_id` too (a register the gate refused, whose worker runs all the same).
+    """
+    return [row for row in ledger_rows() if row.get("job_id") and row.get("decision") == "ALLOW"]
+
+
+def outcome_state(outcome: object) -> str:
+    """Return the state a dispatch is in, from the outcome Orca gives it. See `dispatch_state` for the six states."""
+    if not isinstance(outcome, str):
+        return "unread"
+    return "open" if outcome == "in_progress" else outcome if outcome in SETTLED else "unknown"
+
+
+def dispatch_state(answer: dict) -> tuple[str, object]:
+    """Return where a dispatch stands and the outcome Orca gave it (None if none), from Orca's answer to `worker-show`
+    as `orca_answer` returns it. Every command reads a dispatch from here.
+
+    | State       | What Orca shows                                     | What the wrapper does                                  |
+    |-------------|-----------------------------------------------------|--------------------------------------------------------|
+    | `open`      | outcome `in_progress`                               | `dispatch` holds its contract and task; `resume` goes  |
+    |             |                                                     | on from it only; `watch` waits for it; `report` leaves |
+    |             |                                                     | it                                                     |
+    | `succeeded` | outcome `succeeded`                                 | `report` measures its usage; it holds nothing          |
+    | `failed`    | outcome `failed`                                    | `report` measures its usage; it holds nothing          |
+    | `unknown`   | any other outcome (a string)                        | read as open: `dispatch` holds, `watch` waits,         |
+    |             |                                                     | `report` leaves it, `resume` refuses                   |
+    | `gone`      | error `dispatch_not_found` (as after an `orca       | `report` settles it as unmeasured; `dispatch` holds    |
+    |             | orchestration reset`)                               | nothing for it                                         |
+    | `unread`    | no answer, another refusal, or an ok answer without | read as open: `dispatch` holds; `report` leaves it     |
+    |             | a string outcome                                    |                                                        |
+
+    A new outcome of Orca's is never taken for settled, and an answer that cannot be read is never taken for gone.
+    """
+    if pluck(answer, "error", "code") == "dispatch_not_found":
+        return "gone", None
+    outcome = pluck(answer, "result", "projection", "outcome") if answer.get("ok") else None
+    return outcome_state(outcome), outcome
+
+
 def task_of(row: dict) -> object:
     """Return the task a registered dispatch belongs to: the Orca Task of the first dispatch at it.
 
@@ -228,8 +271,8 @@ def task_of(row: dict) -> object:
 def attempts() -> dict[object, list[str]]:
     """Map every task of this workspace's ledger to the dispatches the gate registered for it, oldest first."""
     tasks: dict[object, list[str]] = {}
-    for row in ledger_rows():
-        if row.get("job_id") and row.get("decision") == "ALLOW" and task_of(row):
+    for row in registered():
+        if task_of(row):
             tasks.setdefault(task_of(row), []).append(row["job_id"])
     return tasks
 
@@ -240,8 +283,8 @@ def same_contract(contract: str) -> list[str]:
     return [row["job_id"] for row in ledger_rows() if row.get("contract_sha") == sha and row.get("job_id")]
 
 
-def unsettled_dispatch(earlier: list[str]) -> tuple[str, object] | None:
-    """Return the newest of these dispatches that Orca does not show as settled, with the outcome it gives.
+def unsettled_dispatch(earlier: list[str]) -> tuple[str, object, str] | None:
+    """Return the newest of these dispatches that Orca does not show as settled, with the outcome it gives and its state.
 
     A second worker on one contract, or on one task, repeats the first one's edits in the same files. It is
     asked for most often after an Orca restart, when the first worker's report is missing and its work is not.
@@ -251,14 +294,9 @@ def unsettled_dispatch(earlier: list[str]) -> tuple[str, object] | None:
     know, leaves it held.
     """
     for dispatch_id in dict.fromkeys(reversed(earlier)):
-        answer = orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full")
-        if pluck(answer, "error", "code") == "dispatch_not_found":
-            continue
-        shown = (answer.get("result") if answer.get("ok") else None) or {}
-        projection = shown.get("projection")
-        outcome = projection.get("outcome") if isinstance(projection, dict) else None
-        if outcome not in SETTLED:
-            return dispatch_id, outcome
+        state, outcome = dispatch_state(orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full"))
+        if state in HELD:
+            return dispatch_id, outcome, state
     return None
 
 
@@ -530,10 +568,10 @@ def dispatch(args: argparse.Namespace) -> int:
     same = same_contract(contract) if Path(contract).is_file() else []
     held = unsettled_dispatch([*tried, *same])
     if held:
-        running, outcome = held
+        running, outcome, state = held
         what, reason = ("this contract", "CONTRACT_ALREADY_RUNNING") if running in same else ("this task", "TASK_ALREADY_RUNNING")
-        print(json.dumps({"stage": "check", "allow": False, "reason": reason, "dispatch": running, "outcome": outcome}))
-        if outcome == "in_progress":
+        print(json.dumps({"stage": "check", "allow": False, "reason": reason, "dispatch": running, "outcome": outcome, "state": state}))
+        if state == "open":
             return fail(
                 f"{what} already runs as dispatch {running}, which Orca shows open. Talk to that worker "
                 f"(`orca orchestration send --to dispatch:{running}`) or stop it first"
@@ -844,7 +882,7 @@ def watch(args: argparse.Namespace) -> int:
                     f"watch: Orca lists no dispatch in {args.run}, so there is nothing to watch. Check the Run id: "
                     f"the dispatch line gives it, and so does `orca orchestration run-current --json`"
                 )
-            workers = [worker for worker in listed_workers if worker["outcome"] not in SETTLED]
+            workers = [worker for worker in listed_workers if outcome_state(worker["outcome"]) in HELD]
             first_runtime = first_runtime or runtime
             restarted = " Orca was restarted while you waited." if runtime != first_runtime else ""
             now = time.time()
@@ -874,11 +912,10 @@ def watch(args: argparse.Namespace) -> int:
                     shown = orca_result("orchestration", "worker-show", "--dispatch", dispatch_id, "--full") or {}
                     parked = (shown.get("observation") or {}).get("agentWait")
                     waits = f" Orca sees it parked on a prompt that only a human can answer: {json.dumps(parked)[:200]}." if parked else ""
-                    if worker["outcome"] != "in_progress":
+                    if outcome_state(worker["outcome"]) == "unknown":
                         waits += f" Orca gives it the outcome {worker['outcome']!r}, which this watch does not know and reads as open."
                     # Read only: resume itself proves the ending again before it types anything.
-                    tail = pluck(orca_result("terminal", "read", "--terminal", worker["terminal"]), "terminal", "tail")
-                    ended = isinstance(tail, list) and all(isinstance(line, str) for line in tail) and ended_session(tail)
+                    ended = agent_ended(worker["terminal"])
                     step = (
                         f"The agent has ended and its terminal is kept (Claude's resume line, then a shell prompt): run "
                         f"ORCHESTRATION resume --dispatch {dispatch_id}"
@@ -1346,8 +1383,8 @@ def compacted(args: argparse.Namespace) -> int:
             "orchestration-kit: this session is the orchestration master of this workspace, and its context has "
             "just been compacted. You now work from a summary. Load the orchestration-kit:master skill again and "
             'follow its section "Hand over to a successor": tell the owner that a handoff is due and write it '
-            "before any other work. Open dispatches are in .orchestration/dispatch-ledger.jsonl, and "
-            "`orca orchestration run-current --json` gives the Run."
+            "before any other work. Once that skill is loaded, `ORCHESTRATION status` lists every dispatch that "
+            "is open, with its Run."
         )
     return 0
 
@@ -1397,20 +1434,19 @@ def settle(dispatch_id: str, said: list[str], runtime: object = None) -> str:
         said.append(f"{dispatch_id}: not settled, {error}")
         return "unsettled"
     result = answer.get("result") if answer.get("ok") else None
-    error = answer.get("error")
-    if isinstance(error, dict) and error.get("code") == "dispatch_not_found":
+    state, outcome = dispatch_state(answer)
+    if state == "gone":
         # Measured on Orca 1.4.259 (2026-11-15) for an id that never existed: ok false, error.code dispatch_not_found,
         # exit 1. A ledger older than an `orca orchestration reset` holds such dispatches, and no later answer differs.
         said.append(f"{dispatch_id}: Orca does not know this dispatch (dispatch_not_found), as after an `orca orchestration reset`: settled as unmeasured")
         agent, options = runtime if isinstance(runtime, str) else "unknown", []
     else:
-        outcome = pluck(result, "projection", "outcome")
-        if isinstance(outcome, str) and outcome not in SETTLED:
+        if state in ("open", "unknown"):
             return "open"  # its count would be partial, and the gate keeps the first measured result
         worktree, agent = pluck(result, "worker", "worktreeId"), pluck(result, "worker", "startOptions", "agent")
         since = utc_seconds(pluck(result, "dispatch", "dispatchedAt"))
         present = {
-            "projection.outcome": outcome in SETTLED, "worker.worktreeId": isinstance(worktree, str),
+            "projection.outcome": state in ("succeeded", "failed"), "worker.worktreeId": isinstance(worktree, str),
             "worker.startOptions.agent": isinstance(agent, str), "dispatch.dispatchedAt": since is not None,
         }
         if not all(present.values()):
@@ -1459,15 +1495,21 @@ def token_line(row: dict, shown: str) -> str | None:
     return f"  {row['job_id']}: budget {f'{budget} {basis}' if budget is not None else 'unset'}, usage {text}"
 
 
-def report(args: argparse.Namespace) -> int:
+def missing_ledger() -> int | None:
+    """Fail unless the current folder holds a dispatch ledger, and leave no folder behind."""
     ledger = Path.cwd() / ".orchestration" / "dispatch-ledger.jsonl"
     if not ledger.is_file():  # an empty summary from the wrong folder would read as "nothing was dispatched"
         return fail(f"no dispatch ledger at {ledger}; run this from the workspace root")
+    return None
+
+
+def report(args: argparse.Namespace) -> int:
+    if missing := missing_ledger():
+        return missing
     # Settling rewrites the ledger, so it is here and not in `watch`, which only reads.
     said: list[str] = []
     shown = {
-        row["job_id"]: settle(row["job_id"], said, row.get("runtime")) for row in ledger_rows()
-        if row.get("job_id") and row.get("decision") == "ALLOW" and "token_usage" not in row
+        row["job_id"]: settle(row["job_id"], said, row.get("runtime")) for row in registered() if "token_usage" not in row
     }
     done = gate_run("report", *(["--today"] if args.today else []))
     print(done.stdout + done.stderr, end="")
@@ -1475,7 +1517,7 @@ def report(args: argparse.Namespace) -> int:
     retried = {task: ids for task, ids in attempts().items() if len(ids) > 1}
     print("Tasks with more than one attempt (all ledger entries, oldest first):")
     print("\n".join(f"  {task}: {', '.join(ids)}" for task, ids in retried.items()) or "  <none>")
-    lines = [line for row in ledger_rows() if row.get("job_id") and row.get("decision") == "ALLOW"
+    lines = [line for row in registered()
              for line in [token_line(row, shown.get(row["job_id"]) or "unsettled")] if line]
     if lines:
         print("Token budget and usage (dispatches with either, and open ones):")
@@ -1512,6 +1554,18 @@ def ended_session(tail: list[str]) -> tuple[str, str] | None:
     return (lines[-2], found.group(1)) if found else None
 
 
+def agent_ended(terminal: object) -> tuple[str, str] | None:
+    """Return Claude's resume command and session id if the text of a worker's terminal shows its agent ended, else None.
+
+    Reads only, and proves no session file: `resume` proves the ending again before it types anything. A row without a
+    terminal handle is not ended, and Orca is not asked about it.
+    """
+    if not isinstance(terminal, str) or not terminal:
+        return None
+    tail = pluck(orca_result("terminal", "read", "--terminal", terminal), "terminal", "tail")
+    return ended_session(tail) if isinstance(tail, list) and all(isinstance(line, str) for line in tail) else None
+
+
 def resumable(dispatch_id: str) -> dict[str, str]:
     """Prove that the Claude agent of a registered dispatch has ended while its terminal is there, and return the
     terminal, the command that brings its session back, the session id and the Run. Raise Refused otherwise.
@@ -1519,7 +1573,7 @@ def resumable(dispatch_id: str) -> dict[str, str]:
     Reads only. A session started twice edits the same files twice, so each doubt is a refusal.
     """
     ledger = Path.cwd() / ".orchestration" / "dispatch-ledger.jsonl"  # not state_dir(): a refusal leaves no folder behind
-    if not ledger.is_file() or not any(row.get("job_id") == dispatch_id and row.get("decision") == "ALLOW" for row in ledger_rows()):
+    if not ledger.is_file() or not any(row["job_id"] == dispatch_id for row in registered()):
         raise Refused(
             "NOT_REGISTERED",
             f"the ledger of this workspace ({ledger}) does not hold {dispatch_id} as a registered dispatch. Run this from the "
@@ -1543,15 +1597,16 @@ def resumable(dispatch_id: str) -> dict[str, str]:
         return value
 
     outcome = need("projection.outcome")
-    if outcome == "succeeded":
+    state = outcome_state(outcome)
+    if state == "succeeded":
         raise Refused("SUCCEEDED", f"Orca shows {dispatch_id} as succeeded, so there is nothing to resume. Review its report as for any worker")
-    if outcome == "failed":
+    if state == "failed":
         raise Refused(
             "FAILED",
             f"Orca shows {dispatch_id} as failed and has given the dispatch up: a session started in its terminal could not "
             f"report for it. Dispatch the task again with `ORCHESTRATION dispatch ... --follows {dispatch_id}`",
         )
-    if outcome != "in_progress":
+    if state != "open":
         raise Refused(
             "OUTCOME_UNKNOWN",
             f"Orca gives {dispatch_id} the outcome {outcome!r}, which this command does not know. Look at it with "
@@ -1654,6 +1709,109 @@ def resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def step_of(dispatch_id: str, answer: dict, siblings: list[str], refused: bool) -> str | None:
+    """Return the words after a dispatch's name in a `status` line: where it stands, and the step it waits for.
+
+    siblings are the dispatches of its task, oldest first. A refused one (its register was denied) is named only while
+    its worker may still run, and then it is to be stopped.
+    """
+    state, outcome = dispatch_state(answer)
+    if refused and state not in HELD:
+        return None
+    result = answer.get("result") if answer.get("ok") else None
+    run = pluck(result, "dispatch", "runId")
+    named = isinstance(run, str) and bool(run)
+    inside = f"in {run}" if named else "in a Run that Orca's answer does not name"
+    newer = f"{siblings[-1]} followed it." if siblings and siblings[-1] != dispatch_id else None
+    if state == "open":
+        parked, verdict = pluck(result, "observation", "agentWait"), pluck(result, "projection", "liveness", "verdict")
+        keep = f"Keep `ORCHESTRATION watch --run {run}` running" if named else (
+            "Keep a watch running on its Run, which `orca orchestration run-current --json` names"
+        )
+        if parked:
+            head = f" is open {inside}, parked on a prompt that only a human can answer: {json.dumps(parked)[:200]}."
+            step = "Tell the owner what it asks, and do not answer it through its terminal."
+        elif verdict == "live":
+            head = f" is open {inside}, and Orca shows its agent live."
+            step = f"{keep}; a message reaches it with: orca orchestration send --to dispatch:{dispatch_id}"
+        elif agent_ended(pluck(result, "worker", "agentTerminalHandle")):
+            head = f" is open {inside}, and its agent has ended while its terminal is kept (Claude's resume line, then a shell prompt):"
+            step = f"run ORCHESTRATION resume --dispatch {dispatch_id}"
+        else:
+            head = f" is open {inside}, and Orca does not show its agent live (liveness {verdict or 'not given'}), which alone proves nothing."
+            step = f"Read its screen: orca orchestration worker-read --dispatch {dispatch_id}"
+    elif state == "succeeded":
+        head = f" has succeeded {inside}."
+        step = newer or (
+            f"Its report is a claim: verify, review and merge it. A fix is a new dispatch with --follows {dispatch_id}. "
+            "`ORCHESTRATION report` measures its usage."
+        )
+    elif state == "failed":
+        head = f" has failed {inside}."
+        step = newer or (
+            f"Its task has had {ATTEMPTS} attempts: stop, and tell the owner what was tried." if len(siblings) >= ATTEMPTS
+            else f"Dispatch its task again with --follows {dispatch_id}."
+        )
+    elif state == "unknown":
+        head = f": Orca gives it the outcome {outcome!r}, which this wrapper does not know and reads as open."
+        step = f"Look at it with `orca orchestration worker-show --dispatch {dispatch_id}` and tell the owner."
+    elif state == "gone":
+        head = " is gone: Orca does not know it (dispatch_not_found), as after an `orca orchestration reset`."
+        step = "`ORCHESTRATION report` settles it as unmeasured, and it holds neither its contract nor its task."
+    else:
+        said = json.dumps(answer.get("error") or answer, ensure_ascii=False)[:300] if answer else "nothing"
+        head = f": Orca gave no usable answer about it ({said})."
+        step = "See that `orca status` answers, then run this again."
+    if refused:
+        head = head[:-1] + "." if head.endswith(":") else head
+        step = f"Its worker runs unaccepted: stop it with orca orchestration worker-stop --dispatch {dispatch_id}"
+    return f"{head} {step}"
+
+
+def status(args: argparse.Namespace) -> int:
+    """Say where every dispatch of this workspace's ledger that `report` has not measured stands, and the step it waits for.
+
+    Only reads: no gate, no file, no folder. Orca is asked `worker-show` of each such dispatch, and, for an open one
+    that Orca does not show live, the text of its terminal. All lines are built before the first is printed, so that an
+    Orca CLI that cannot be started leaves a message and no half a report.
+    """
+    if missing := missing_ledger():
+        return missing
+    own = os.environ.get("ORCA_TERMINAL_HANDLE")
+    marker = Path.cwd() / ".orchestration" / "master"
+    recorded = marker.read_text(encoding="utf-8", errors="replace").strip() if marker.is_file() else ""
+    if not recorded:
+        record = "none"
+    elif recorded == own:
+        record = f"{recorded} (this terminal)"
+    else:
+        record = f"{recorded} (not this terminal, which is {own or 'no Orca terminal'})"
+    lines = [f"status: master record: {record}"]
+    tasks = attempts()
+    rows = [row for row in ledger_rows() if row.get("job_id")]  # the denied ones too: their workers run all the same
+    for row in rows:
+        if "token_usage" in row:
+            continue
+        dispatch_id, refused = row["job_id"], row.get("decision") != "ALLOW"
+        siblings = [] if refused else tasks.get(task_of(row), [])
+        if refused:
+            who = f"dispatch {dispatch_id} (refused at register: {row.get('reason')})"
+        elif dispatch_id in siblings:
+            who = f"dispatch {dispatch_id} (task {task_of(row)}, attempt {siblings.index(dispatch_id) + 1} of {ATTEMPTS})"
+        else:
+            who = f"dispatch {dispatch_id}"
+        answer = orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full")
+        words = step_of(dispatch_id, answer, siblings, refused)
+        if words:
+            lines.append(f"status: {who}{words}")
+    lines.append(
+        f"status: {sum('token_usage' in row for row in rows)} earlier dispatch(es) are over and measured: "
+        "ORCHESTRATION report lists them."
+    )
+    print("\n".join(lines))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="orchestration", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1737,6 +1895,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = commands.add_parser("resume", help="bring back the Claude session of a worker whose agent ended without a report")
     sub.add_argument("--dispatch", required=True, help="the worker's dispatch, as the dispatch line gives it")
     sub.set_defaults(handler=resume)
+
+    sub = commands.add_parser("status", help="say where every dispatch that report has not measured stands; only reads")
+    sub.set_defaults(handler=status)
 
     sub = commands.add_parser("probe-model")  # internal: called by the gate during register
     sub.add_argument("agent", choices=("claude", "codex"))

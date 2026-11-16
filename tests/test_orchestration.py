@@ -1195,5 +1195,150 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(place, ["--worktree", "new-top-level", "--repo", f"path:{project}", "--base-branch", branch])
 
 
+    def test_dispatch_state_names_the_six_states_every_command_reads(self):
+        shown = lambda outcome: {"ok": True, "result": {"projection": {"outcome": outcome}}}  # noqa: E731
+        for answer, expected in (
+            (shown("in_progress"), ("open", "in_progress")),
+            (shown("succeeded"), ("succeeded", "succeeded")),
+            (shown("failed"), ("failed", "failed")),
+            (shown("paused"), ("unknown", "paused")),  # an outcome this wrapper does not know is read as open
+            ({"ok": False, "error": {"code": "dispatch_not_found"}}, ("gone", None)),
+            ({}, ("unread", None)),  # no answer
+            ({"ok": False, "error": {"code": "invalid_argument"}}, ("unread", None)),  # another refusal
+            ({"ok": False, "error": "unknown option"}, ("unread", None)),
+            ({"ok": True, "result": {"projection": {}}}, ("unread", None)),  # an answer without an outcome
+            ({"ok": True, "result": []}, ("unread", None)),
+            (shown(7), ("unread", 7)),  # an outcome that is no string
+            # Only an ok answer holds a dispatch.
+            ({"ok": False, "result": {"projection": {"outcome": "succeeded"}}}, ("unread", None)),
+        ):
+            with self.subTest(answer=answer):
+                self.assertEqual(orchestration.dispatch_state(answer), expected)
+        self.assertEqual([orchestration.outcome_state(value) for value in ("in_progress", "failed", "x", None)], ["open", "failed", "unknown", "unread"])
+
+    def status_ledger(self, master=None):
+        """A ledger of five unmeasured dispatches (three attempts at one task, one alone, one whose register was denied)
+        and one measured; returns what `snapshot` shows."""
+        state = self.work / ".orchestration"
+        state.mkdir(exist_ok=True)
+        rows = [
+            {"job_id": "ctx_one", "decision": "ALLOW", "card": "task_t", "orchestration_task": "task_t"},
+            {"job_id": "ctx_two", "decision": "ALLOW", "card": "task_t", "orchestration_task": "task_two"},
+            {"job_id": "ctx_three", "decision": "ALLOW", "card": "task_t"},
+            {"job_id": "ctx_denied", "decision": "DENY", "reason": "MODEL_TIER_ESCALATION"},
+            {"job_id": "ctx_solo", "decision": "ALLOW", "card": "task_u"},
+            {"job_id": "ctx_done", "decision": "ALLOW", "card": "task_v", "token_usage": {"source": "measured"}},
+        ]
+        (state / "dispatch-ledger.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows) + "not json\n", encoding="utf-8")
+        if master:
+            (state / "master").write_text(master, encoding="utf-8")
+        return self.snapshot()
+
+    def snapshot(self):
+        """The ledger's bytes and the files under .orchestration."""
+        state = self.work / ".orchestration"
+        return (state / "dispatch-ledger.jsonl").read_bytes(), sorted(path.name for path in state.iterdir())
+
+    def test_status_says_where_each_dispatch_stands_and_only_reads(self):
+        before = self.status_ledger(master="term_test")
+        each = {"ctx_one": "task task_t, attempt 1", "ctx_two": "task task_t, attempt 2", "ctx_three": "task task_t, attempt 3", "ctx_solo": "task task_u, attempt 1"}
+        who = {name: f"dispatch {name} ({place} of 3)" for name, place in each.items()}
+        denied = "dispatch ctx_denied (refused at register: MODEL_TIER_ESCALATION)"
+        stop = "Its worker runs unaccepted: stop it with orca orchestration worker-stop --dispatch ctx_denied"
+        last = "status: 1 earlier dispatch(es) are over and measured: ORCHESTRATION report lists them."
+        run, shell = "run_test", json.dumps(["Working (12s)", "PS C:\\work>"])
+        parked = Path(self.work / "frames.json")
+        parked.write_text(json.dumps([{"parked": ["ctx_one", "ctx_two", "ctx_three", "ctx_solo", "ctx_denied"]}]), encoding="utf-8")
+        # state: the environment that shows it, then (head, step) for every dispatch; {id} is the dispatch's.
+        held = (
+            ("live", {}, f" is open in {run}, and Orca shows its agent live.",
+             f"Keep `ORCHESTRATION watch --run {run}` running; a message reaches it with: orca orchestration send --to dispatch:{{id}}"),
+            ("parked", {"FAKE_ORCA_FRAMES": str(parked)}, f' is open in {run}, parked on a prompt that only a human can answer: {{"evidence": "prompt-text"}}.',
+             "Tell the owner what it asks, and do not answer it through its terminal."),
+            ("ended", {"FAKE_ORCA_LIVENESS": "unverifiable"},
+             f" is open in {run}, and its agent has ended while its terminal is kept (Claude's resume line, then a shell prompt):",
+             "run ORCHESTRATION resume --dispatch {id}"),
+            ("not live", {"FAKE_ORCA_LIVENESS": "unverifiable", "FAKE_ORCA_TAIL": shell},
+             f" is open in {run}, and Orca does not show its agent live (liveness unverifiable), which alone proves nothing.",
+             "Read its screen: orca orchestration worker-read --dispatch {id}"),
+            ("unknown", {"FAKE_ORCA_OUTCOME": "paused"}, ": Orca gives it the outcome 'paused', which this wrapper does not know and reads as open.",
+             "Look at it with `orca orchestration worker-show --dispatch {id}` and tell the owner."),
+            ("unread", {"FAKE_ORCA_OUTCOME": "no answer"}, ": Orca gave no usable answer about it (nothing).",
+             "See that `orca status` answers, then run this again."),
+        )
+        for name, environment, head, step in held:
+            expected = ["status: master record: term_test (this terminal)"]
+            expected += [f"status: {who[dispatch]}{head} {step.format(id=dispatch)}" for dispatch in ("ctx_one", "ctx_two", "ctx_three")]
+            expected.append(f"status: {denied}{head[:-1] + '.' if head.endswith(':') else head} {stop}")
+            expected.append(f"status: {who['ctx_solo']}{head} {step.format(id='ctx_solo')}")
+            with self.subTest(name), mock.patch.dict(os.environ, environment):
+                code, output = self.cli("status")
+                self.assertEqual((code, output.splitlines()), (0, [*expected, last]))
+        gone = (" is gone: Orca does not know it (dispatch_not_found), as after an `orca orchestration reset`. "
+                "`ORCHESTRATION report` settles it as unmeasured, and it holds neither its contract nor its task.")
+        over = {
+            "succeeded": (f" has succeeded in {run}. ", f"Its report is a claim: verify, review and merge it. A fix is a new dispatch with --follows {{id}}. `ORCHESTRATION report` measures its usage."),
+            "failed": (f" has failed in {run}. ", "Its task has had 3 attempts: stop, and tell the owner what was tried."),
+        }
+        for outcome, (head, step) in over.items():  # a refused dispatch whose state is over is not listed
+            expected = ["status: master record: term_test (this terminal)", f"status: {who['ctx_one']}{head}ctx_three followed it.", f"status: {who['ctx_two']}{head}ctx_three followed it.",
+                        f"status: {who['ctx_three']}{head}{step.format(id='ctx_three')}"]
+            expected.append(f"status: {who['ctx_solo']}{head}" + (step.format(id="ctx_solo") if outcome == "succeeded" else "Dispatch its task again with --follows ctx_solo."))
+            with self.subTest(outcome), mock.patch.dict(os.environ, {"FAKE_ORCA_OUTCOME": outcome}):
+                self.assertEqual(self.cli("status"), (0, "\n".join([*expected, last]) + "\n"))
+        with mock.patch.dict(os.environ, {"FAKE_ORCA_OUTCOME": "unknown dispatch"}):
+            output = self.cli("status")[1].splitlines()
+        self.assertEqual(output[1:-1], [f"status: {who[name]}{gone}" for name in ("ctx_one", "ctx_two", "ctx_three", "ctx_solo")])
+        with mock.patch.dict(os.environ, {"FAKE_ORCA_WITHOUT": "dispatch.runId"}):  # an answer that names no Run
+            line = self.cli("status")[1].splitlines()[1]
+        self.assertIn("is open in a Run that Orca's answer does not name, and Orca shows its agent live. Keep a watch running on its Run, which `orca orchestration run-current --json` names; a message", line)
+        # It only reads: the ledger, the folder, the gate and Orca's workers are as they were.
+        self.assertEqual(self.snapshot(), before)
+        asked = {tuple(call[:2]) for call in self.orca_calls()}
+        self.assertEqual(asked, {("orchestration", "worker-show"), ("terminal", "read")})
+        self.assertTrue(all("--full" in call and "--dispatch" in call for call in self.orca_calls() if call[1] == "worker-show"))
+        with mock.patch.object(orchestration, "gate_run", side_effect=AssertionError("the gate was called")):
+            self.assertEqual(self.cli("status")[0], 0)
+
+    def test_status_names_the_master_record_and_needs_a_ledger(self):
+        code, output = self.cli("status")  # a folder that dispatched nothing
+        self.assertEqual(code, 2)
+        self.assertEqual(output, f"orchestration: no dispatch ledger at {self.work / '.orchestration' / 'dispatch-ledger.jsonl'}; run this from the workspace root\n")
+        self.assertFalse((self.work / ".orchestration").exists())
+        self.assertEqual(self.orca_calls(), [])
+        for master, own, record in (
+            (None, "term_test", "none"),
+            ("term_test", "term_test", "term_test (this terminal)"),
+            ("term_old", "term_test", "term_old (not this terminal, which is term_test)"),
+            ("term_old", None, "term_old (not this terminal, which is no Orca terminal)"),
+        ):
+            (self.work / ".orchestration" / "master").unlink(missing_ok=True)
+            self.status_ledger(master=master)
+            with self.subTest(record), mock.patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": own or ""}):
+                if own is None:
+                    os.environ.pop("ORCA_TERMINAL_HANDLE")
+                self.assertEqual(self.cli("status")[1].splitlines()[0], f"status: master record: {record}")
+        os.environ["ORCA_CLI_COMMAND"] = str(self.work / "no-such-orca.exe")  # an Orca CLI that cannot be started
+        code, output = self.cli("status")
+        self.assertEqual(code, 2)
+        self.assertNotIn("status: master", output)
+
+
+    def test_a_held_dispatch_line_carries_the_state_of_the_dispatch_that_holds_it(self):
+        self.assertEqual(self.dispatch()[0], 0)
+        for outcome, state in (("in_progress", "open"), ("paused", "unknown"), ("no answer", "unread")):
+            with self.subTest(outcome), mock.patch.dict(os.environ, {"FAKE_ORCA_OUTCOME": outcome}):
+                code, output = self.dispatch()
+                line = json.loads(output.splitlines()[0])
+                self.assertEqual((code, line["reason"], line["dispatch"], line["state"]), (2, "CONTRACT_ALREADY_RUNNING", "ctx_test", state))
+                self.assertEqual(line["outcome"], None if outcome == "no answer" else outcome)
+        self.assertEqual(len(self.worker_starts()), 1)
+
+    def test_a_worker_row_without_a_terminal_handle_is_not_ended_and_orca_is_not_asked(self):
+        calls = len(self.orca_calls())
+        self.assertIsNone(orchestration.agent_ended(None))
+        self.assertEqual(len(self.orca_calls()), calls)
+
+
 if __name__ == "__main__":
     unittest.main()

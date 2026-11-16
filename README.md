@@ -14,6 +14,8 @@ Runs and mail. The plugin adds:
 - **A wait that survives an Orca restart**: a read-only `watch` that wakes the master when Orca does not.
 - **Resume a worker whose agent ended**: `resume --dispatch <id>` brings the Claude session back in the worker's
   own terminal, once the screen proves the agent ended, and it reports for the same dispatch.
+- **Where a dispatch stands**: `status` says, for every dispatch that `report` has not measured, whether Orca shows it
+  open, settled, unknown, gone or unreadable, and the step it waits for. It only reads.
 - **Master succession**: a checked handoff, a successor launched in Orca, a lineage ledger, and the predecessor's terminal closed by Orca after a recorded `PASS`.
 - **Review workflow**: `/orchestration-kit:orchestration-review` fans a diff out to reviewers and verifies
   every blocking finding.
@@ -47,7 +49,7 @@ fresh master in an Orca terminal on the same checkout (`start`). The `orchestrat
 
 | Piece | Path |
 |---|---|
-| Wrapper (`prepare`, `dispatch`, `watch`, `resume`, `start`, `succeed`, `inherit`, `report`) | `scripts/orchestration.py` |
+| Wrapper (`prepare`, `dispatch`, `watch`, `resume`, `start`, `succeed`, `inherit`, `report`, `status`) | `scripts/orchestration.py` |
 | Repository harness installer (`<repository root> [--dry-run]`) | `scripts/harness.py` |
 | Repository harness files | `harness/` |
 | Model families, tiers and caps | `config/model-tier-policy.json` |
