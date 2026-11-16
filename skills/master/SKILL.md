@@ -156,6 +156,21 @@ each a worktree and a new branch. The branch that holds the work is the one the 
 `git -C <workspace> branch --show-current` gives it: review and merge that one, and name a branch that
 was left unused in your report.
 
+## Where a dispatch stands
+
+`ORCHESTRATION status` prints the state and the next step of every dispatch that `report` has not measured. It only
+reads: no gate, no file, no worker. Run it as a successor, after a compaction, after an Orca restart, and before a
+`send` to a worker that has gone quiet.
+
+| State | What Orca shows | What you may do |
+|---|---|---|
+| `open` | outcome `in_progress` | wait; `send` if its agent is live; `resume` if its screen proves the agent ended |
+| `succeeded` | outcome `succeeded` | verify, review, merge; a fix is a new dispatch with `--follows` |
+| `failed` | outcome `failed` | dispatch the task again with `--follows`; stop after 3 attempts |
+| `unknown` | any other outcome | read it as open; look at it and tell the owner |
+| `gone` | `dispatch_not_found`, as after `orca orchestration reset` | nothing: `report` settles it as unmeasured |
+| `unread` | no answer, a refusal, or no outcome | see that `orca status` answers, then run `status` again |
+
 ## Wait for workers
 
 Orca wakes you by typing into your terminal, and after a restart it does not. Never wait on Orca alone:
@@ -228,8 +243,7 @@ a repeated wake is the whole answer, not an error.
   make the fixes yourself unless the owner gave that work to you.
 - `orca orchestration send --to dispatch:<id> --subject "<topic>" --body "<message>"` is for a worker that
   is still working: it gets the message when its current turn ends.
-- Before a `send` to a worker that has gone quiet, look at its dispatch (`orca orchestration worker-show
-  --dispatch <id>`). To one whose agent has ended it is kept as mail and reaches nobody until the session runs
+- Before a `send` to a worker that has gone quiet, look at its dispatch (`ORCHESTRATION status`). To one whose agent has ended it is kept as mail and reaches nobody until the session runs
   again; to one whose terminal is gone, which Orca shows as `failed`, it starts a fresh worker no gate has checked.
 - Stop after the third failed attempt at one task, whether the worker failed or its result was rejected,
   and tell the owner what was tried and why each attempt fell short: the contract or the task is what
@@ -314,5 +328,5 @@ ORCHESTRATION inherit --handoff <file> --verification PASS|PARTIAL|FAILED --pare
 - Report what you inherited to the owner, before any other work. After `PASS`, do not end your turn on
   that report: nobody answers it, and an idle successor stalls the work. Carry on with the next step the
   handoff names, unless the handoff says that step waits for the owner, and start your own watch if the
-  Run has a dispatch open. After `PARTIAL` or `FAILED`, stop after the report: the owner has to supply
+  Run has a dispatch open (`ORCHESTRATION status` names it). After `PARTIAL` or `FAILED`, stop after the report: the owner has to supply
   what the handoff lost.
