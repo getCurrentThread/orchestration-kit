@@ -1446,7 +1446,7 @@ def settle(dispatch_id: str, said: list[str], runtime: object = None) -> str:
         worktree, agent = pluck(result, "worker", "worktreeId"), pluck(result, "worker", "startOptions", "agent")
         since = utc_seconds(pluck(result, "dispatch", "dispatchedAt"))
         present = {
-            "projection.outcome": state in ("succeeded", "failed"), "worker.worktreeId": isinstance(worktree, str),
+            "projection.outcome": state in SETTLED, "worker.worktreeId": isinstance(worktree, str),
             "worker.startOptions.agent": isinstance(agent, str), "dispatch.dispatchedAt": since is not None,
         }
         if not all(present.values()):
