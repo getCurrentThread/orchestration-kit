@@ -3,7 +3,11 @@
 A Claude Code plugin for Windows that adds a thin orchestration layer on top of the Orca CLI, reassembled
 from [baksohyeon/mogui-ADE-orchestrator](https://github.com/baksohyeon/mogui-ADE-orchestrator) and
 [baksohyeon/mogui-agent-harness](https://github.com/baksohyeon/mogui-agent-harness). Orca keeps its workers,
-Runs and mail. The plugin adds:
+Runs and mail.
+
+![Who does what. The owner asks the master and the master reports back. A contract goes from the master through the dispatch gate, which notes it in the ledger, into Orca, where a worker starts in a terminal of its own. The worker's report, worker_done, comes back to the master as Orca mail, and watch wakes the master when that mail does not arrive.](docs/overview-animated.svg)
+
+The plugin adds:
 
 - **Dispatch gate and ledger**: a worker starts only after its contract passes the gate, and every decision
   is appended to a ledger. A retry or a fix is one more attempt at the same task (`dispatch --follows`). A
@@ -23,6 +27,20 @@ Runs and mail. The plugin adds:
 - **Review workflow**: `/orchestration-kit:orchestration-review` fans a diff out to reviewers and verifies
   every blocking finding.
 - **Repository harness**: the rules a worker follows inside one repository (`harness/`).
+
+## How it works
+
+The parts by name, and who calls what. A solid arrow acts and a dashed one only reads:
+
+![The owner asks the master, and the master runs the commands of scripts/orchestration.py. That wrapper has the dispatch gate check and register every start, the gate appends to the ledger under .orchestration/, and the wrapper asks Orca to start the worker. Orca starts the worker in its workspace, which prepare gave the harness rules. The worker reports with worker_done, and Orca's mail wakes the master; watch wakes it when Orca does not. The review workflow reads the worker's diff.](docs/overview.svg)
+
+One dispatch, from its contract to the merge, and the four ways it can go differently:
+
+![The usual path: contract, check, start, register, work, verify, accept. A: the gate says no before the start, so no worker runs; fix what the line says and dispatch again. B: the gate says no after the start, so the worker already runs and nobody else starts until it is settled. C: the worker goes quiet; watch rings and resume carries on the same dispatch. D: the result is not what the contract asked; dispatch --follows sends the next attempt at the same task, three at most.](docs/dispatch-lifecycle-comic.svg)
+
+The master role moves to a successor session through a written handoff:
+
+![Six steps. The master's memory fills up, or the owner asks for a handover. The old master writes a handoff note. succeed checks the note and launches a successor in Orca. The successor reads the note and takes over the Run's mail. inherit records the result in the lineage. On PASS, Orca closes the old terminal, and workers keep running.](docs/succession-animated.svg)
 
 ## Requirements
 
@@ -49,6 +67,10 @@ Ask a Claude Code session to act as master (`/orchestration-kit:master`). In an 
 is the master. In any other terminal it starts Orca if Orca is closed, and carries the conversation into a
 fresh master in an Orca terminal on the same checkout (`start`). The `orchestration-kit:master` skill
 (`skills/master/SKILL.md`) holds the whole procedure, and each script explains its commands with `--help`.
+
+The wrapper's ten commands, in the order a master meets them:
+
+![Set up: start opens a fresh master in Orca, and prepare gets a project folder ready. Run work: dispatch sends one contract through the gate and starts its worker, and watch wakes the master when Orca does not. Look: status says where each dispatch stands, and report counts the tokens each used against its budget. Recover: resume wakes a worker whose agent ended before it reported, and override-hold lifts a hold on the owner's word. Hand over: succeed checks the handoff note and calls in a successor, and inherit records the succession.](docs/commands-comic.svg)
 
 | Piece | Path |
 |---|---|

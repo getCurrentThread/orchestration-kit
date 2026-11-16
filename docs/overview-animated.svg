@@ -1,0 +1,240 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 490" width="960" height="490" role="img" aria-labelledby="t d">
+<title id="t">Who does what in orchestration-kit</title>
+<desc id="d">A map that moves. The owner asks the master and the master reports back. The blue area is what the plugin adds: the dispatch gate with its ledger, the review that reads every result, and the harness, the rules for workers. Orca is the workshop: each worker sits in a terminal of its own, with the rules on its wall. A contract travels from the master to the gate, is stamped ALLOW, and goes on into Orca, where a worker starts. The worker's report, worker_done, travels back as Orca mail and wakes the master; the watch wakes it when that mail does not arrive.</desc>
+<style>
+:root{--bg:#fff;--panel:#f6f8fa;--box:#fff;--line:#d0d7de;--ink:#1f2328;--muted:#59636e;--kit:#0969da;--kit-soft:#ddf4ff;--ok:#1a7f37;--ok-soft:#dafbe1;--stop:#cf222e;--warn:#9a6700;--warn-soft:#fff8c5;--guard:#8c959f;--hat:#eac54f;--wb:#d0d7de}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--panel:#151b23;--box:#0d1117;--line:#3d444d;--ink:#f0f6fc;--muted:#9198a1;--kit:#1f6feb;--kit-soft:#111d2e;--ok:#238636;--ok-soft:#12261e;--stop:#f85149;--warn:#d29922;--warn-soft:#272115;--guard:#656c76;--hat:#bb8009;--wb:#3d444d}}
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;font-size:12.5px;fill:var(--muted)}
+.h{font-size:20px;font-weight:700;fill:var(--ink)}
+.t{font-size:14.5px;font-weight:600;fill:var(--ink)}
+.say{font-size:13px;fill:var(--ink)}
+.m{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+.k{fill:var(--kit);font-weight:600}
+.num{font-size:13px;font-weight:700;fill:var(--bg)}
+.sm{font-size:11px}
+.cap2{font-size:10.5px;font-weight:700;letter-spacing:1.2px;fill:var(--ink)}
+.tiny{font-size:10px;font-weight:600;fill:var(--warn)}
+.stampt{font-size:11px;font-weight:700;letter-spacing:.8px;fill:var(--ok)}
+.bg{fill:var(--bg)}
+.panel{fill:var(--panel);stroke:var(--line)}
+.gr{fill:none;stroke:var(--line);stroke-width:2;stroke-linecap:round}
+.sk{fill:none;stroke:var(--line);stroke-width:5;stroke-linecap:round}
+.ln{fill:none;stroke:var(--ink);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.thin{stroke-width:1.5}
+.arm{fill:none;stroke:var(--ink);stroke-width:2.5;stroke-linecap:round}
+.face{fill:var(--box);stroke:var(--ink);stroke-width:2}
+.eye,.hair{fill:var(--ink)}
+.kf{fill:var(--kit)}
+.kb{fill:var(--kit);stroke:var(--ink);stroke-width:2}
+.gb{fill:var(--guard);stroke:var(--ink);stroke-width:2}
+.wbd{fill:var(--wb);stroke:var(--ink);stroke-width:2}
+.ob{fill:var(--ok);stroke:var(--ink);stroke-width:2}
+.hatc{fill:var(--hat);stroke:var(--ink);stroke-width:2}
+.pp{fill:var(--box);stroke:var(--ink);stroke-width:1.75}
+.bk{fill:var(--kit-soft);stroke:var(--ink);stroke-width:1.75}
+.bub{fill:var(--box);stroke:var(--ink);stroke-width:1.5;stroke-linejoin:round}
+.dot{fill:var(--line)}
+.note{fill:var(--warn-soft);stroke:var(--warn);stroke-width:1.5}
+.stripe{fill:none;stroke:var(--stop);stroke-width:8}
+.stamp{fill:var(--ok-soft);stroke:var(--ok);stroke-width:2}
+.okc{fill:var(--ok-soft);stroke:var(--ok);stroke-width:2.5}
+.chk{fill:none;stroke:var(--ok);stroke-width:4;stroke-linecap:round;stroke-linejoin:round}
+.wc{fill:var(--warn-soft);stroke:var(--warn);stroke-width:2.5}
+.loop{fill:none;stroke:var(--warn);stroke-width:3;stroke-linecap:round;marker-end:url(#lp)}
+.lph{fill:var(--warn)}
+.low{fill:var(--stop)}
+.go{fill:none;stroke:var(--kit);stroke-width:2;stroke-linecap:round;marker-end:url(#go)}
+.goh{fill:var(--kit)}
+:root{--stop-soft:#ffebe9}
+@media (prefers-color-scheme:dark){:root{--stop-soft:#25171c}}
+.kitp{fill:var(--kit-soft);stroke:var(--kit)}
+.stampx{fill:var(--stop-soft);stroke:var(--stop);stroke-width:2}
+.stopt{font-size:11px;font-weight:700;letter-spacing:.8px;fill:var(--stop)}
+.holdt{font-size:11px;font-weight:700;letter-spacing:1px;fill:var(--warn)}
+.mini{font-size:8.5px;font-weight:700;letter-spacing:.6px}
+.zz{font-size:13px;font-weight:700;fill:var(--muted)}
+.badr{fill:var(--stop)}
+.bada{fill:var(--warn)}
+.okf{fill:var(--ok)}
+.wf{fill:var(--warn)}
+.cut{fill:none;stroke:var(--stop);stroke-width:3;stroke-linecap:round}
+.go2{fill:none;stroke:var(--muted);stroke-width:2;stroke-linecap:round;marker-end:url(#g2)}
+.g2h{fill:var(--muted)}
+.flow{fill:none;stroke:var(--muted);stroke-width:2;stroke-linecap:round;stroke-dasharray:5 7;marker-end:url(#g2);animation:march 1s linear infinite}
+@keyframes march{to{stroke-dashoffset:-12}}
+/* one loop of 12 s: a contract goes out through the gate, a report comes back as mail */
+.an{animation:12s infinite both}
+#ovp{opacity:0;animation-name:ovp}
+#ovs{animation-name:ovs}
+#ovl{fill:var(--stop);animation-name:ovl}
+#ovb{transform-origin:446px 226px;animation-name:ovb}
+#ovw{animation-name:ovw}
+#ove{opacity:0;animation-name:ove;animation-timing-function:linear}
+@keyframes ovp{0%,4%{opacity:0;transform:translate(268px,232px) scale(.4)}8%,12%{opacity:1;transform:translate(268px,232px) scale(1)}24%,40%{opacity:1;transform:translate(424px,232px) scale(1)}54%{opacity:1;transform:translate(690px,232px) scale(1)}58%,100%{opacity:0;transform:translate(700px,232px) scale(.6)}}
+@keyframes ovs{0%,26%{opacity:0;transform:rotate(-14deg) scale(2.2)}30%,100%{opacity:1;transform:rotate(-14deg) scale(1)}}
+@keyframes ovl{0%,29%{fill:var(--stop)}31%,58%{fill:var(--ok)}60%,100%{fill:var(--stop)}}
+@keyframes ovb{0%,32%{transform:rotate(0deg)}38%,56%{transform:rotate(-62deg)}62%,100%{transform:rotate(0deg)}}
+@keyframes ovw{0%,58%,62%,66%,70%,100%{transform:translateY(0)}60%,64%,68%{transform:translateY(-5px)}}
+@keyframes ove{0%,72%{opacity:0;transform:translate(686px,262px)}74%{opacity:1;transform:translate(686px,262px)}79%{opacity:1;transform:translate(686px,352px)}84%{opacity:1;transform:translate(686px,452px)}94%{opacity:1;transform:translate(230px,452px)}98%{opacity:1;transform:translate(230px,324px)}100%{opacity:0;transform:translate(230px,318px)}}
+@media (prefers-reduced-motion:reduce){.an,.flow{animation:none!important}}
+</style>
+<defs>
+<marker id="g2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="g2h" d="M0 0L10 5L0 10z"/></marker>
+<marker id="lp" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path class="lph" d="M0 0L10 5L0 10z"/></marker>
+<marker id="go" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="goh" d="M0 0L10 5L0 10z"/></marker>
+<!-- the cast: each stands on its own origin -->
+<g id="master">
+<path class="ln" d="M0 -78V-87"/>
+<circle class="kf" cx="0" cy="-91" r="4"/>
+<rect class="face" x="-19" y="-78" width="38" height="30" rx="10"/>
+<circle class="eye" cx="-7" cy="-64" r="2.8"/>
+<circle class="eye" cx="7" cy="-64" r="2.8"/>
+<path class="ln" d="M-6 -56q6 5 12 0"/>
+<path class="arm" d="M-17 -38q-11 5 -9 18M17 -38q11 5 9 18"/>
+<rect class="kb" x="-17" y="-46" width="34" height="32" rx="8"/>
+<rect class="face" x="-6" y="-40" width="12" height="15" rx="2"/>
+<path class="ln thin" d="M-3 -35H3M-3 -31H3"/>
+<rect class="kb" x="-13" y="-14" width="9" height="14" rx="3"/>
+<rect class="kb" x="4" y="-14" width="9" height="14" rx="3"/>
+</g>
+<g id="guard">
+<rect class="face" x="-19" y="-78" width="38" height="30" rx="10"/>
+<path class="gb" d="M-19 -68v-2a10 10 0 0 1 10-10h18a10 10 0 0 1 10 10v2z"/>
+<rect class="gb" x="-25" y="-70" width="50" height="5" rx="2.5"/>
+<circle class="eye" cx="-7" cy="-59" r="2.8"/>
+<circle class="eye" cx="7" cy="-59" r="2.8"/>
+<path class="ln" d="M-5 -53H5"/>
+<path class="arm" d="M-17 -38q-11 5 -9 18M17 -38q11 5 9 18"/>
+<rect class="gb" x="-17" y="-46" width="34" height="32" rx="8"/>
+<circle class="hatc" cx="-7" cy="-36" r="4"/>
+<rect class="gb" x="-13" y="-14" width="9" height="14" rx="3"/>
+<rect class="gb" x="4" y="-14" width="9" height="14" rx="3"/>
+</g>
+<g id="worker">
+<rect class="face" x="-17" y="-70" width="34" height="27" rx="9"/>
+<path class="hatc" d="M-17 -62a17 14 0 0 1 34 0z"/>
+<rect class="hatc" x="-21" y="-64" width="42" height="5" rx="2.5"/>
+<circle class="eye" cx="-6" cy="-54" r="2.6"/>
+<circle class="eye" cx="6" cy="-54" r="2.6"/>
+<path class="ln" d="M-5 -48q5 4 10 0"/>
+<path class="arm" d="M-15 -34q-10 5 -8 16M15 -34q10 -2 12 -14"/>
+<circle class="ln" cx="29" cy="-53" r="5"/>
+<rect class="wbd" x="-15" y="-41" width="30" height="28" rx="7"/>
+<rect class="wbd" x="-12" y="-13" width="8" height="13" rx="3"/>
+<rect class="wbd" x="4" y="-13" width="8" height="13" rx="3"/>
+</g>
+<g id="owner">
+<path class="ob" d="M-17 0v-30a17 17 0 0 1 34 0v30z"/>
+<circle class="face" cx="0" cy="-62" r="14"/>
+<path class="hair" d="M-14 -63a14 14 0 0 1 28 0q-5 -8 -14 -6q-9 -2 -14 6z"/>
+<circle class="eye" cx="-5" cy="-60" r="2.2"/>
+<circle class="eye" cx="5" cy="-60" r="2.2"/>
+<path class="ln" d="M-4 -54q4 3 8 0"/>
+</g>
+<g id="paper">
+<rect class="pp" x="-17" y="-22" width="34" height="44" rx="3"/>
+<path class="ln thin" d="M-10 -12H10M-10 -4H10M-10 4H10M-10 12H3"/>
+</g>
+<g id="mail">
+<rect class="pp" x="-16" y="-11" width="32" height="22" rx="3"/>
+<path class="ln thin" d="M-16 -9L0 3L16 -9"/>
+</g>
+<g id="book">
+<rect class="bk" x="-20" y="-28" width="40" height="28" rx="3"/>
+<path class="ln thin" d="M-12 -28V0M-6 -20H13M-6 -13H13M-6 -6H6"/>
+</g>
+<g id="clock">
+<path class="ln" d="M-9 -3L-12 0M9 -3L12 0"/>
+<circle class="hatc" cx="-9" cy="-26" r="4"/>
+<circle class="hatc" cx="9" cy="-26" r="4"/>
+<circle class="pp" cx="0" cy="-14" r="12"/>
+<path class="ln thin" d="M0 -14V-21M0 -14H5"/>
+</g>
+</defs>
+
+<rect class="bg" width="960" height="490" rx="8"/>
+<text class="h" x="20" y="44">Who does what</text>
+<text x="20" y="66">The blue area is what this plugin adds. Orca keeps the workers and carries their mail.</text>
+
+<!-- the two areas -->
+<rect class="kitp" x="330" y="84" width="280" height="336" rx="12"/>
+<text class="t" x="346" y="110">orchestration-kit</text>
+<text x="346" y="128">what this plugin adds</text>
+<rect class="panel" x="650" y="84" width="290" height="336" rx="12"/>
+<text class="t" x="666" y="110">Orca</text>
+<text x="666" y="128">the workshop: terminals and mail</text>
+<path class="gr" d="M20 280H316M346 280H594"/>
+
+<!-- you and the master -->
+<use href="#owner" x="70" y="280"/>
+<use href="#master" x="230" y="280"/>
+<use href="#clock" x="290" y="280"/>
+<text x="70" y="300" text-anchor="middle">Owner</text>
+<text x="230" y="300" text-anchor="middle">Master</text>
+<text class="m" x="291" y="300" text-anchor="middle">watch</text>
+<path class="flow" d="M98 232H196"/>
+<text x="147" y="224" text-anchor="middle">asks</text>
+<path class="flow" d="M196 256H98"/>
+<text x="147" y="272" text-anchor="middle">reports</text>
+
+<!-- the gate and its logbook -->
+<use href="#guard" x="392" y="280"/>
+<rect class="gb" x="440" y="224" width="12" height="56" rx="3"/>
+<circle id="ovl" class="an" cx="446" cy="213" r="7"/>
+<circle class="ln thin" cx="446" cy="213" r="7"/>
+<g id="ovb" class="an">
+<rect class="pp" x="444" y="221" width="92" height="10" rx="5"/>
+<path class="stripe" d="M464 222v8M484 222v8M504 222v8M524 222v8"/>
+</g>
+<use href="#book" x="572" y="280"/>
+<text x="412" y="300" text-anchor="middle">dispatch gate</text>
+<text x="572" y="300" text-anchor="middle">ledger</text>
+<circle class="ln" cx="362" cy="340" r="8"/>
+<path class="arm" d="M368 346L375 354"/>
+<text x="392" y="346"><tspan class="m k">review</tspan> reads every result</text>
+<rect class="note" x="351" y="376" width="24" height="20" rx="3"/>
+<path class="ln thin" d="M356 383H370M356 389H365"/>
+<text x="392" y="391"><tspan class="m k">harness</tspan> rules for workers</text>
+
+<!-- Orca's rooms, a worker in each -->
+<rect class="pp" x="666" y="146" width="126" height="134" rx="8"/>
+<path class="ln thin" d="M666 164H792"/>
+<circle class="dot" cx="678" cy="155" r="3"/>
+<circle class="dot" cx="688" cy="155" r="3"/>
+<circle class="dot" cx="698" cy="155" r="3"/>
+<rect class="note" x="750" y="172" width="34" height="24" rx="3"/>
+<text class="tiny" x="767" y="188" text-anchor="middle">rules</text>
+<g id="ovw" class="an"><use href="#worker" x="722" y="278"/></g>
+<rect class="pp" x="802" y="146" width="126" height="134" rx="8"/>
+<path class="ln thin" d="M802 164H928"/>
+<circle class="dot" cx="814" cy="155" r="3"/>
+<circle class="dot" cx="824" cy="155" r="3"/>
+<circle class="dot" cx="834" cy="155" r="3"/>
+<rect class="note" x="886" y="172" width="34" height="24" rx="3"/>
+<text class="tiny" x="903" y="188" text-anchor="middle">rules</text>
+<use href="#worker" x="858" y="278"/>
+<text x="729" y="300" text-anchor="middle">worker</text>
+<text x="865" y="300" text-anchor="middle">worker</text>
+<use href="#mail" x="686" y="352"/>
+<text x="712" y="349"><tspan class="m k">worker_done</tspan></text>
+<text x="712" y="366">the report, sent as Orca mail</text>
+
+<!-- the routes -->
+<path class="flow" d="M258 240H360"/>
+<text x="296" y="204" text-anchor="middle">contract</text>
+<path class="flow" d="M462 244H660"/>
+<text x="630" y="236" text-anchor="middle">start</text>
+<path class="flow" d="M686 368V452H230V312"/>
+<text x="458" y="436" text-anchor="middle">the report wakes the master</text>
+<text x="458" y="478" text-anchor="middle"><tspan class="m">watch</tspan> wakes it when Orca's mail does not arrive</text>
+
+<!-- what moves -->
+<g id="ovp" class="an">
+<use href="#paper"/>
+<g id="ovs" class="an">
+<rect class="stamp" x="-26" y="-10" width="52" height="20" rx="4"/>
+<text class="stampt" x="0" y="4" text-anchor="middle">ALLOW</text>
+</g>
+</g>
+<g id="ove" class="an"><use href="#mail"/></g>
+</svg>

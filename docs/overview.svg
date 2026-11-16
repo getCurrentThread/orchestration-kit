@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 572" width="960" height="572" role="img" aria-labelledby="t d">
+<title id="t">Who talks to whom in orchestration-kit</title>
+<desc id="d">The owner asks the master, a Claude Code session in an Orca terminal. The master runs the commands of scripts/orchestration.py. That wrapper asks the dispatch gate, which appends every decision to .orchestration/, and then asks Orca to start a worker. The worker reports worker_done through Orca, whose mail wakes the master; a read-only watch wakes it when Orca does not. The review workflow reads the worker's diff, and prepare installs the repository harness into the worker's workspace.</desc>
+<style>
+:root{--bg:#fff;--panel:#f6f8fa;--box:#fff;--line:#d0d7de;--ink:#1f2328;--muted:#59636e;--kit:#0969da;--kit-soft:#ddf4ff}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--panel:#151b23;--box:#0d1117;--line:#3d444d;--ink:#f0f6fc;--muted:#9198a1;--kit:#4493f8;--kit-soft:#111d2e}}
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;font-size:12px;fill:var(--muted)}
+.t{font-size:14px;font-weight:600;fill:var(--ink)}
+.m{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+.n{font-size:12px;font-weight:400;fill:var(--muted)}
+.k{fill:var(--kit);font-weight:600}
+.bg{fill:var(--bg)}
+.panel{fill:var(--panel);stroke:var(--line)}
+.kit{fill:var(--kit-soft);stroke:var(--kit)}
+.box{fill:var(--box);stroke:var(--line);stroke-width:1.25}
+.dash{stroke-dasharray:4 3}
+.a{fill:none;stroke:var(--muted);stroke-width:1.5;marker-end:url(#a)}
+.r{stroke-dasharray:5 4}
+.ah{fill:var(--muted)}
+</style>
+<defs>
+<marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+</defs>
+
+<rect class="bg" width="960" height="572" rx="8"/>
+
+<!-- the two panels: what the plugin adds, and what Orca keeps -->
+<rect class="kit" x="30" y="170" width="480" height="366" rx="10"/>
+<text class="t" x="50" y="197">orchestration-kit<tspan class="n" dx="10">what this plugin adds</tspan></text>
+<rect class="panel" x="620" y="170" width="310" height="366" rx="10"/>
+<text class="t" x="640" y="197">Orca<tspan class="n" dx="10">keeps workers, Runs and mail</tspan></text>
+
+<!-- owner and master -->
+<rect class="box" x="30" y="24" width="130" height="68" rx="8"/>
+<text class="t" x="95" y="54" text-anchor="middle">Owner</text>
+<text x="95" y="74" text-anchor="middle">asks and decides</text>
+<rect class="box" x="220" y="24" width="710" height="68" rx="8"/>
+<text class="t" x="240" y="54">Master</text>
+<text x="240" y="74">A Claude Code session in an Orca terminal. It coordinates; the workers do the work.</text>
+
+<!-- inside orchestration-kit -->
+<rect class="box" x="50" y="212" width="440" height="76" rx="8"/>
+<text class="t m" x="70" y="243">scripts/orchestration.py</text>
+<text x="70" y="265">the wrapper: every command of the master goes through it</text>
+<rect class="box" x="50" y="352" width="210" height="64" rx="8"/>
+<text class="t" x="70" y="379">Dispatch gate</text>
+<text x="70" y="399">allows or refuses a start</text>
+<rect class="box" x="290" y="352" width="200" height="64" rx="8"/>
+<text class="t" x="310" y="379">Review workflow</text>
+<text x="310" y="399">reviewers, then a verifier</text>
+<rect class="box" x="50" y="452" width="210" height="64" rx="8"/>
+<text class="t m" x="70" y="479">.orchestration/</text>
+<text x="70" y="499">ledger and other state</text>
+<rect class="box" x="290" y="452" width="200" height="64" rx="8"/>
+<text class="t" x="310" y="479">Repository harness</text>
+<text x="310" y="499">rules a worker follows</text>
+
+<!-- inside Orca -->
+<rect class="box" x="640" y="212" width="270" height="76" rx="8"/>
+<text class="t" x="660" y="243">Runs · mail · terminals</text>
+<text x="660" y="265">starts agents, carries their mail</text>
+<rect class="box" x="646" y="358" width="270" height="164" rx="8"/>
+<rect class="box" x="640" y="352" width="270" height="164" rx="8"/>
+<text class="t" x="660" y="379">Worker</text>
+<text x="660" y="399">a claude or codex agent</text>
+<rect class="box dash" x="656" y="414" width="238" height="88" rx="6"/>
+<text class="t" x="672" y="437" style="font-size:12.5px">its workspace</text>
+<text x="672" y="455">project directory or worktree</text>
+<rect class="kit" x="672" y="472" width="104" height="24" rx="12"/>
+<text class="k" x="724" y="488" text-anchor="middle" style="font-size:11.5px">harness rules</text>
+
+<!-- owner and master -->
+<path class="a" d="M160 46H220"/>
+<text x="190" y="39" text-anchor="middle">asks</text>
+<path class="a" d="M220 70H160"/>
+<text x="190" y="86" text-anchor="middle">reports</text>
+
+<!-- master and the two panels -->
+<path class="a" d="M360 92V212"/>
+<text x="352" y="136" text-anchor="end">runs the commands</text>
+<path class="a r" d="M440 212V92"/>
+<text x="448" y="136"><tspan class="m">watch</tspan> wakes it when Orca does not</text>
+<path class="a" d="M880 212V92"/>
+<text x="872" y="136" text-anchor="end">mail wakes the master</text>
+
+<!-- wrapper to gate to ledger -->
+<path class="a" d="M155 288V352"/>
+<text class="m" x="165" y="324">check · register</text>
+<path class="a" d="M155 416V452"/>
+<text x="165" y="438">appends</text>
+
+<!-- wrapper to Orca -->
+<path class="a" d="M490 236H640"/>
+<text class="m" x="565" y="229" text-anchor="middle">worker-start</text>
+<path class="a r" d="M490 268H640"/>
+<text class="m" x="565" y="261" text-anchor="middle">watch · status</text>
+
+<!-- review and harness reach the worker -->
+<path class="a r" d="M490 384H640"/>
+<text x="565" y="377" text-anchor="middle">reads the diff</text>
+<path class="a" d="M490 484H672"/>
+<text class="m" x="565" y="477" text-anchor="middle">prepare</text>
+
+<!-- Orca and its worker -->
+<path class="a" d="M700 288V352"/>
+<text x="710" y="324">starts</text>
+<path class="a" d="M810 352V288"/>
+<text class="m" x="820" y="324">worker_done</text>
+
+<!-- legend -->
+<path class="a" d="M30 554H62"/>
+<text x="70" y="558">acts</text>
+<path class="a r" d="M112 554H144"/>
+<text x="152" y="558">only reads</text>
+</svg>

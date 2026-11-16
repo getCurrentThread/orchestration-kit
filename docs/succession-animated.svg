@@ -1,0 +1,277 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 452" width="960" height="452" role="img" aria-labelledby="t d">
+<title id="t">How the master role moves to a successor, in six steps</title>
+<desc id="d">An animation in six steps. 1: The master's memory fills up, or the owner asks for a handover. 2: The old master writes a handoff note of eight sections into .orchestration/handoffs. 3: Its succeed command checks the note and opens a successor master in a new Orca terminal. 4: The successor reads the note and takes over the Run's mail. 5: Its inherit command records the verdict in the lineage log. 6: On PASS, Orca closes the old terminal, and workers keep running.</desc>
+<style>
+:root{--bg:#fff;--panel:#f6f8fa;--box:#fff;--line:#d0d7de;--ink:#1f2328;--muted:#59636e;--kit:#0969da;--kit-soft:#ddf4ff;--ok:#1a7f37;--ok-soft:#dafbe1;--stop:#cf222e;--warn:#9a6700;--warn-soft:#fff8c5;--guard:#8c959f;--hat:#eac54f;--wb:#d0d7de}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--panel:#151b23;--box:#0d1117;--line:#3d444d;--ink:#f0f6fc;--muted:#9198a1;--kit:#1f6feb;--kit-soft:#111d2e;--ok:#238636;--ok-soft:#12261e;--stop:#f85149;--warn:#d29922;--warn-soft:#272115;--guard:#656c76;--hat:#bb8009;--wb:#3d444d}}
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;font-size:12.5px;fill:var(--muted)}
+.h{font-size:20px;font-weight:700;fill:var(--ink)}
+.t{font-size:14.5px;font-weight:600;fill:var(--ink)}
+.say{font-size:13px;fill:var(--ink)}
+.m{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+.k{fill:var(--kit);font-weight:600}
+.num{font-size:13px;font-weight:700;fill:var(--bg)}
+.sm{font-size:11px}
+.cap2{font-size:10.5px;font-weight:700;letter-spacing:1.2px;fill:var(--ink)}
+.tiny{font-size:10px;font-weight:600;fill:var(--warn)}
+.stampt{font-size:11px;font-weight:700;letter-spacing:.8px;fill:var(--ok)}
+.bg{fill:var(--bg)}
+.panel{fill:var(--panel);stroke:var(--line)}
+.gr{fill:none;stroke:var(--line);stroke-width:2;stroke-linecap:round}
+.sk{fill:none;stroke:var(--line);stroke-width:5;stroke-linecap:round}
+.ln{fill:none;stroke:var(--ink);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.thin{stroke-width:1.5}
+.arm{fill:none;stroke:var(--ink);stroke-width:2.5;stroke-linecap:round}
+.face{fill:var(--box);stroke:var(--ink);stroke-width:2}
+.eye,.hair{fill:var(--ink)}
+.kf{fill:var(--kit)}
+.kb{fill:var(--kit);stroke:var(--ink);stroke-width:2}
+.gb{fill:var(--guard);stroke:var(--ink);stroke-width:2}
+.wbd{fill:var(--wb);stroke:var(--ink);stroke-width:2}
+.ob{fill:var(--ok);stroke:var(--ink);stroke-width:2}
+.hatc{fill:var(--hat);stroke:var(--ink);stroke-width:2}
+.pp{fill:var(--box);stroke:var(--ink);stroke-width:1.75}
+.bk{fill:var(--kit-soft);stroke:var(--ink);stroke-width:1.75}
+.bub{fill:var(--box);stroke:var(--ink);stroke-width:1.5;stroke-linejoin:round}
+.dot{fill:var(--line)}
+.note{fill:var(--warn-soft);stroke:var(--warn);stroke-width:1.5}
+.stripe{fill:none;stroke:var(--stop);stroke-width:8}
+.stamp{fill:var(--ok-soft);stroke:var(--ok);stroke-width:2}
+.okc{fill:var(--ok-soft);stroke:var(--ok);stroke-width:2.5}
+.chk{fill:none;stroke:var(--ok);stroke-width:4;stroke-linecap:round;stroke-linejoin:round}
+.wc{fill:var(--warn-soft);stroke:var(--warn);stroke-width:2.5}
+.loop{fill:none;stroke:var(--warn);stroke-width:3;stroke-linecap:round;marker-end:url(#lp)}
+.lph{fill:var(--warn)}
+.low{fill:var(--stop)}
+.go{fill:none;stroke:var(--kit);stroke-width:2;stroke-linecap:round;marker-end:url(#go)}
+.goh{fill:var(--kit)}
+.capx{font-size:17px;font-weight:600;fill:var(--ink)}
+.led{fill:none;stroke:var(--kit);stroke-width:3;stroke-linecap:round}
+.runp{fill:var(--kit-soft);stroke:var(--kit);stroke-width:1.5}
+.runt{font-size:12px;font-weight:600;fill:var(--kit)}
+.shut{fill:none;stroke:var(--stop);stroke-width:4;stroke-linecap:round}
+.shutt{font-size:13px;font-weight:600;fill:var(--stop)}
+/* one loop of 20 s: six steps of 3 s, then the end state held. Without motion the end state is what shows. */
+.an{animation:20s infinite both}
+#bat{transform-origin:199px 184px;transform:scaleX(.2);fill:var(--stop);animation-name:bat}
+#mf{animation-name:mf}
+#note{transform:translate(700px,250px);animation-name:note}
+#nchk{animation-name:nchk}
+#newwin{transform-origin:775px 206px;animation-name:newwin}
+#succ{animation-name:succ}
+#spark{opacity:0;animation-name:spark}
+#run{transform:translate(775px,92px);animation-name:run}
+#lin{stroke-dasharray:20;animation-name:lin}
+#pass{transform:rotate(-10deg);animation-name:pass}
+#oldwin{opacity:.28;animation-name:oldwin}
+#shut{animation-name:shut}
+#c1{opacity:0;animation-name:c1}
+#c2{opacity:0;animation-name:c2}
+#c3{opacity:0;animation-name:c3}
+#c4{opacity:0;animation-name:c4}
+#c5{opacity:0;animation-name:c5}
+#c6{animation-name:c6}
+@keyframes bat{0%,2%{transform:scaleX(1);fill:var(--ok)}11%,100%{transform:scaleX(.2);fill:var(--stop)}}
+@keyframes mf{0%,10%{opacity:0}12%,100%{opacity:1}}
+@keyframes note{0%,15%{opacity:0;transform:translate(222px,246px) scale(.4)}18%,21%{opacity:1;transform:translate(222px,246px) scale(1)}28%,45%{opacity:1;transform:translate(440px,262px) scale(1)}52%,97%{opacity:1;transform:translate(700px,250px) scale(1)}100%{opacity:0;transform:translate(700px,250px) scale(1)}}
+@keyframes nchk{0%,31%{opacity:0;transform:scale(2.4)}34%,100%{opacity:1;transform:scale(1)}}
+@keyframes newwin{0%,36%{opacity:0;transform:scale(.85)}40%,97%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1)}}
+@keyframes succ{0%,39%{opacity:0;transform:translateY(8px)}43%,85%,89%,93%,97%{opacity:1;transform:translateY(0)}87%,91%,95%{opacity:1;transform:translateY(-6px)}100%{opacity:0;transform:translateY(0)}}
+@keyframes spark{0%,40%{opacity:0}42%,46%{opacity:1}49%,100%{opacity:0}}
+@keyframes run{0%,52%{transform:translate(185px,92px)}59%,100%{transform:translate(775px,92px)}}
+@keyframes lin{0%,62%{stroke-dashoffset:20}66%,97%{stroke-dashoffset:0}100%{stroke-dashoffset:20}}
+@keyframes pass{0%,66%{opacity:0;transform:rotate(-10deg) scale(2.2)}69%,97%{opacity:1;transform:rotate(-10deg) scale(1)}100%{opacity:0;transform:rotate(-10deg) scale(1)}}
+@keyframes oldwin{0%,78%{opacity:1}84%,97%{opacity:.28}100%{opacity:1}}
+@keyframes shut{0%,82%{opacity:0}85%,97%{opacity:1}100%{opacity:0}}
+@keyframes c1{0%{opacity:0}1.5%,13.5%{opacity:1}15%,100%{opacity:0}}
+@keyframes c2{0%,15%{opacity:0}16.5%,28.5%{opacity:1}30%,100%{opacity:0}}
+@keyframes c3{0%,30%{opacity:0}31.5%,43.5%{opacity:1}45%,100%{opacity:0}}
+@keyframes c4{0%,45%{opacity:0}46.5%,58.5%{opacity:1}60%,100%{opacity:0}}
+@keyframes c5{0%,60%{opacity:0}61.5%,73.5%{opacity:1}75%,100%{opacity:0}}
+@keyframes c6{0%,75%{opacity:0}76.5%,97.5%{opacity:1}100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.an{animation:none!important}}
+</style>
+<defs>
+<marker id="lp" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path class="lph" d="M0 0L10 5L0 10z"/></marker>
+<marker id="go" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="goh" d="M0 0L10 5L0 10z"/></marker>
+<!-- the cast: each stands on its own origin -->
+<g id="master">
+<path class="ln" d="M0 -78V-87"/>
+<circle class="kf" cx="0" cy="-91" r="4"/>
+<rect class="face" x="-19" y="-78" width="38" height="30" rx="10"/>
+<circle class="eye" cx="-7" cy="-64" r="2.8"/>
+<circle class="eye" cx="7" cy="-64" r="2.8"/>
+<path class="ln" d="M-6 -56q6 5 12 0"/>
+<path class="arm" d="M-17 -38q-11 5 -9 18M17 -38q11 5 9 18"/>
+<rect class="kb" x="-17" y="-46" width="34" height="32" rx="8"/>
+<rect class="face" x="-6" y="-40" width="12" height="15" rx="2"/>
+<path class="ln thin" d="M-3 -35H3M-3 -31H3"/>
+<rect class="kb" x="-13" y="-14" width="9" height="14" rx="3"/>
+<rect class="kb" x="4" y="-14" width="9" height="14" rx="3"/>
+</g>
+<g id="guard">
+<rect class="face" x="-19" y="-78" width="38" height="30" rx="10"/>
+<path class="gb" d="M-19 -68v-2a10 10 0 0 1 10-10h18a10 10 0 0 1 10 10v2z"/>
+<rect class="gb" x="-25" y="-70" width="50" height="5" rx="2.5"/>
+<circle class="eye" cx="-7" cy="-59" r="2.8"/>
+<circle class="eye" cx="7" cy="-59" r="2.8"/>
+<path class="ln" d="M-5 -53H5"/>
+<path class="arm" d="M-17 -38q-11 5 -9 18M17 -38q11 5 9 18"/>
+<rect class="gb" x="-17" y="-46" width="34" height="32" rx="8"/>
+<circle class="hatc" cx="-7" cy="-36" r="4"/>
+<rect class="gb" x="-13" y="-14" width="9" height="14" rx="3"/>
+<rect class="gb" x="4" y="-14" width="9" height="14" rx="3"/>
+</g>
+<g id="worker">
+<rect class="face" x="-17" y="-70" width="34" height="27" rx="9"/>
+<path class="hatc" d="M-17 -62a17 14 0 0 1 34 0z"/>
+<rect class="hatc" x="-21" y="-64" width="42" height="5" rx="2.5"/>
+<circle class="eye" cx="-6" cy="-54" r="2.6"/>
+<circle class="eye" cx="6" cy="-54" r="2.6"/>
+<path class="ln" d="M-5 -48q5 4 10 0"/>
+<path class="arm" d="M-15 -34q-10 5 -8 16M15 -34q10 -2 12 -14"/>
+<circle class="ln" cx="29" cy="-53" r="5"/>
+<rect class="wbd" x="-15" y="-41" width="30" height="28" rx="7"/>
+<rect class="wbd" x="-12" y="-13" width="8" height="13" rx="3"/>
+<rect class="wbd" x="4" y="-13" width="8" height="13" rx="3"/>
+</g>
+<g id="owner">
+<path class="ob" d="M-17 0v-30a17 17 0 0 1 34 0v30z"/>
+<circle class="face" cx="0" cy="-62" r="14"/>
+<path class="hair" d="M-14 -63a14 14 0 0 1 28 0q-5 -8 -14 -6q-9 -2 -14 6z"/>
+<circle class="eye" cx="-5" cy="-60" r="2.2"/>
+<circle class="eye" cx="5" cy="-60" r="2.2"/>
+<path class="ln" d="M-4 -54q4 3 8 0"/>
+</g>
+<g id="paper">
+<rect class="pp" x="-17" y="-22" width="34" height="44" rx="3"/>
+<path class="ln thin" d="M-10 -12H10M-10 -4H10M-10 4H10M-10 12H3"/>
+</g>
+<g id="mail">
+<rect class="pp" x="-16" y="-11" width="32" height="22" rx="3"/>
+<path class="ln thin" d="M-16 -9L0 3L16 -9"/>
+</g>
+<g id="book">
+<rect class="bk" x="-20" y="-28" width="40" height="28" rx="3"/>
+<path class="ln thin" d="M-12 -28V0M-6 -20H13M-6 -13H13M-6 -6H6"/>
+</g>
+<g id="clock">
+<path class="ln" d="M-9 -3L-12 0M9 -3L12 0"/>
+<circle class="hatc" cx="-9" cy="-26" r="4"/>
+<circle class="hatc" cx="9" cy="-26" r="4"/>
+<circle class="pp" cx="0" cy="-14" r="12"/>
+<path class="ln thin" d="M0 -14V-21M0 -14H5"/>
+</g>
+</defs>
+
+<rect class="bg" width="960" height="452" rx="8"/>
+<text class="h" x="20" y="44">The master hands over</text>
+<path class="gr" d="M20 300H940"/>
+<text x="185" y="322" text-anchor="middle">the old master's terminal</text>
+<text class="m" x="440" y="322" text-anchor="middle">handoffs/</text>
+<text class="m" x="526" y="322" text-anchor="middle">lineage.md</text>
+<text x="775" y="322" text-anchor="middle">the successor's terminal</text>
+
+<!-- the old master and its terminal: faded once Orca has closed it -->
+<g id="oldwin" class="an">
+<rect class="pp" x="40" y="112" width="290" height="188" rx="8"/>
+<path class="ln thin" d="M40 134H330"/>
+<circle class="dot" cx="53" cy="123" r="3.5"/>
+<circle class="dot" cx="65" cy="123" r="3.5"/>
+<circle class="dot" cx="77" cy="123" r="3.5"/>
+<text class="sm" x="320" y="127" text-anchor="end">terminal</text>
+<rect class="pp" x="196" y="176" width="36" height="16" rx="3"/>
+<rect class="eye" x="232" y="180" width="3" height="8" rx="1"/>
+<rect id="bat" class="an" x="199" y="179" width="30" height="10" rx="1.5"/>
+<text id="mf" class="sm an" x="215" y="208" text-anchor="middle">memory full</text>
+<use href="#master" x="150" y="298"/>
+</g>
+<g id="shut" class="an">
+<path class="shut" d="M104 152L120 168M120 152L104 168"/>
+<text class="shutt" x="130" y="165">closed by Orca</text>
+</g>
+
+<!-- .orchestration/: the tray for handoff notes, and the lineage log -->
+<path class="ln" d="M416 278v12h48v-12"/>
+<use href="#book" x="526" y="300"/>
+<path id="lin" class="led an" d="M520 287H539"/>
+<g transform="translate(526 248)">
+<g id="pass" class="an">
+<rect class="stamp" x="-24" y="-10" width="48" height="20" rx="4"/>
+<text class="stampt" x="0" y="4" text-anchor="middle">PASS</text>
+</g>
+</g>
+
+<!-- the successor and its terminal -->
+<g id="newwin" class="an">
+<rect class="pp" x="630" y="112" width="290" height="188" rx="8"/>
+<path class="ln thin" d="M630 134H920"/>
+<circle class="dot" cx="643" cy="123" r="3.5"/>
+<circle class="dot" cx="655" cy="123" r="3.5"/>
+<circle class="dot" cx="667" cy="123" r="3.5"/>
+<text class="sm" x="910" y="127" text-anchor="end">terminal</text>
+<path class="sk" d="M800 170H890M800 184H868M800 198H880"/>
+</g>
+<g id="succ" class="an"><use href="#master" x="748" y="298"/></g>
+<path id="spark" class="ln thin an" d="M704 168v14M697 175h14M792 156v12M786 162h12"/>
+
+<!-- what moves: the Run's mail, and the handoff note -->
+<g id="run" class="an">
+<rect class="runp" x="-40" y="-13" width="80" height="26" rx="13"/>
+<rect class="pp" x="-30" y="-7" width="20" height="14" rx="2"/>
+<path class="ln thin" d="M-30 -6L-20 1L-10 -6"/>
+<text class="runt" x="-4" y="4">Run</text>
+</g>
+<g id="note" class="an">
+<use href="#paper"/>
+<g id="nchk" class="an">
+<circle class="okc" cx="12" cy="-18" r="9" style="stroke-width:1.75"/>
+<path class="chk" d="M8 -18l3 3l5-6" style="stroke-width:2.5"/>
+</g>
+</g>
+
+<!-- the caption of each step, and where the loop is -->
+<rect class="panel" x="20" y="346" width="920" height="62" rx="12"/>
+<circle class="dot" cx="435" cy="430" r="4.5"/>
+<circle class="dot" cx="453" cy="430" r="4.5"/>
+<circle class="dot" cx="471" cy="430" r="4.5"/>
+<circle class="dot" cx="489" cy="430" r="4.5"/>
+<circle class="dot" cx="507" cy="430" r="4.5"/>
+<circle class="dot" cx="525" cy="430" r="4.5"/>
+<g id="c1" class="an">
+<circle class="kf" cx="56" cy="377" r="14"/>
+<text class="num" x="56" y="382" text-anchor="middle">1</text>
+<text class="capx" x="490" y="383" text-anchor="middle">The master's memory fills up, or the owner asks for a handover.</text>
+<circle class="kf" cx="435" cy="430" r="4.5"/>
+</g>
+<g id="c2" class="an">
+<circle class="kf" cx="56" cy="377" r="14"/>
+<text class="num" x="56" y="382" text-anchor="middle">2</text>
+<text class="capx" x="490" y="383" text-anchor="middle">The old master writes a handoff note: eight sections.</text>
+<circle class="kf" cx="453" cy="430" r="4.5"/>
+</g>
+<g id="c3" class="an">
+<circle class="kf" cx="56" cy="377" r="14"/>
+<text class="num" x="56" y="382" text-anchor="middle">3</text>
+<text class="capx" x="490" y="383" text-anchor="middle">The <tspan class="m">succeed</tspan> command checks the note and opens a successor in Orca.</text>
+<circle class="kf" cx="471" cy="430" r="4.5"/>
+</g>
+<g id="c4" class="an">
+<circle class="kf" cx="56" cy="377" r="14"/>
+<text class="num" x="56" y="382" text-anchor="middle">4</text>
+<text class="capx" x="490" y="383" text-anchor="middle">The successor reads the note and takes over the Run's mail.</text>
+<circle class="kf" cx="489" cy="430" r="4.5"/>
+</g>
+<g id="c5" class="an">
+<circle class="kf" cx="56" cy="377" r="14"/>
+<text class="num" x="56" y="382" text-anchor="middle">5</text>
+<text class="capx" x="490" y="383" text-anchor="middle">Its <tspan class="m">inherit</tspan> command records the verdict in the lineage log.</text>
+<circle class="kf" cx="507" cy="430" r="4.5"/>
+</g>
+<g id="c6" class="an">
+<circle class="kf" cx="56" cy="377" r="14"/>
+<text class="num" x="56" y="382" text-anchor="middle">6</text>
+<text class="capx" x="490" y="383" text-anchor="middle">On PASS, Orca closes the old terminal. Workers keep running.</text>
+<circle class="kf" cx="525" cy="430" r="4.5"/>
+</g>
+</svg>

@@ -1,0 +1,299 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 780" width="960" height="780" role="img" aria-labelledby="t d">
+<title id="t">One dispatch: the usual path and four detours</title>
+<desc id="d">The usual path of a dispatch is contract, check, start, register, work, verify, accept. Detour A, at check: the gate refuses before the start, no worker exists, and the master fixes what the line says and dispatches again. Detour B, at register: the gate refuses after the start, the worker already runs, and no other dispatch passes until it is settled or the owner uses override-hold. Detour C, at work: the worker goes quiet; if its agent ended, resume wakes it, and after an Orca restart the master asks for the report again. Detour D, at verify: the result is rejected, and a fix contract is dispatched with --follows as the next attempt of the same task, three at most.</desc>
+<style>
+:root{--bg:#fff;--panel:#f6f8fa;--box:#fff;--line:#d0d7de;--ink:#1f2328;--muted:#59636e;--kit:#0969da;--kit-soft:#ddf4ff;--ok:#1a7f37;--ok-soft:#dafbe1;--stop:#cf222e;--warn:#9a6700;--warn-soft:#fff8c5;--guard:#8c959f;--hat:#eac54f;--wb:#d0d7de}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--panel:#151b23;--box:#0d1117;--line:#3d444d;--ink:#f0f6fc;--muted:#9198a1;--kit:#1f6feb;--kit-soft:#111d2e;--ok:#238636;--ok-soft:#12261e;--stop:#f85149;--warn:#d29922;--warn-soft:#272115;--guard:#656c76;--hat:#bb8009;--wb:#3d444d}}
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;font-size:12.5px;fill:var(--muted)}
+.h{font-size:20px;font-weight:700;fill:var(--ink)}
+.t{font-size:14.5px;font-weight:600;fill:var(--ink)}
+.say{font-size:13px;fill:var(--ink)}
+.m{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+.k{fill:var(--kit);font-weight:600}
+.num{font-size:13px;font-weight:700;fill:var(--bg)}
+.sm{font-size:11px}
+.cap2{font-size:10.5px;font-weight:700;letter-spacing:1.2px;fill:var(--ink)}
+.tiny{font-size:10px;font-weight:600;fill:var(--warn)}
+.stampt{font-size:11px;font-weight:700;letter-spacing:.8px;fill:var(--ok)}
+.bg{fill:var(--bg)}
+.panel{fill:var(--panel);stroke:var(--line)}
+.gr{fill:none;stroke:var(--line);stroke-width:2;stroke-linecap:round}
+.sk{fill:none;stroke:var(--line);stroke-width:5;stroke-linecap:round}
+.ln{fill:none;stroke:var(--ink);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.thin{stroke-width:1.5}
+.arm{fill:none;stroke:var(--ink);stroke-width:2.5;stroke-linecap:round}
+.face{fill:var(--box);stroke:var(--ink);stroke-width:2}
+.eye,.hair{fill:var(--ink)}
+.kf{fill:var(--kit)}
+.kb{fill:var(--kit);stroke:var(--ink);stroke-width:2}
+.gb{fill:var(--guard);stroke:var(--ink);stroke-width:2}
+.wbd{fill:var(--wb);stroke:var(--ink);stroke-width:2}
+.ob{fill:var(--ok);stroke:var(--ink);stroke-width:2}
+.hatc{fill:var(--hat);stroke:var(--ink);stroke-width:2}
+.pp{fill:var(--box);stroke:var(--ink);stroke-width:1.75}
+.bk{fill:var(--kit-soft);stroke:var(--ink);stroke-width:1.75}
+.bub{fill:var(--box);stroke:var(--ink);stroke-width:1.5;stroke-linejoin:round}
+.dot{fill:var(--line)}
+.note{fill:var(--warn-soft);stroke:var(--warn);stroke-width:1.5}
+.stripe{fill:none;stroke:var(--stop);stroke-width:8}
+.stamp{fill:var(--ok-soft);stroke:var(--ok);stroke-width:2}
+.okc{fill:var(--ok-soft);stroke:var(--ok);stroke-width:2.5}
+.chk{fill:none;stroke:var(--ok);stroke-width:4;stroke-linecap:round;stroke-linejoin:round}
+.wc{fill:var(--warn-soft);stroke:var(--warn);stroke-width:2.5}
+.loop{fill:none;stroke:var(--warn);stroke-width:3;stroke-linecap:round;marker-end:url(#lp)}
+.lph{fill:var(--warn)}
+.low{fill:var(--stop)}
+.go{fill:none;stroke:var(--kit);stroke-width:2;stroke-linecap:round;marker-end:url(#go)}
+.goh{fill:var(--kit)}
+:root{--stop-soft:#ffebe9}
+@media (prefers-color-scheme:dark){:root{--stop-soft:#25171c}}
+.kitp{fill:var(--kit-soft);stroke:var(--kit)}
+.stampx{fill:var(--stop-soft);stroke:var(--stop);stroke-width:2}
+.stopt{font-size:11px;font-weight:700;letter-spacing:.8px;fill:var(--stop)}
+.holdt{font-size:11px;font-weight:700;letter-spacing:1px;fill:var(--warn)}
+.mini{font-size:8.5px;font-weight:700;letter-spacing:.6px}
+.zz{font-size:13px;font-weight:700;fill:var(--muted)}
+.badr{fill:var(--stop)}
+.bada{fill:var(--warn)}
+.okf{fill:var(--ok)}
+.wf{fill:var(--warn)}
+.cut{fill:none;stroke:var(--stop);stroke-width:3;stroke-linecap:round}
+.go2{fill:none;stroke:var(--muted);stroke-width:2;stroke-linecap:round;marker-end:url(#g2)}
+.g2h{fill:var(--muted)}
+</style>
+<defs>
+<marker id="g2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="g2h" d="M0 0L10 5L0 10z"/></marker>
+<marker id="lp" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path class="lph" d="M0 0L10 5L0 10z"/></marker>
+<marker id="go" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="goh" d="M0 0L10 5L0 10z"/></marker>
+<!-- the cast: each stands on its own origin -->
+<g id="master">
+<path class="ln" d="M0 -78V-87"/>
+<circle class="kf" cx="0" cy="-91" r="4"/>
+<rect class="face" x="-19" y="-78" width="38" height="30" rx="10"/>
+<circle class="eye" cx="-7" cy="-64" r="2.8"/>
+<circle class="eye" cx="7" cy="-64" r="2.8"/>
+<path class="ln" d="M-6 -56q6 5 12 0"/>
+<path class="arm" d="M-17 -38q-11 5 -9 18M17 -38q11 5 9 18"/>
+<rect class="kb" x="-17" y="-46" width="34" height="32" rx="8"/>
+<rect class="face" x="-6" y="-40" width="12" height="15" rx="2"/>
+<path class="ln thin" d="M-3 -35H3M-3 -31H3"/>
+<rect class="kb" x="-13" y="-14" width="9" height="14" rx="3"/>
+<rect class="kb" x="4" y="-14" width="9" height="14" rx="3"/>
+</g>
+<g id="guard">
+<rect class="face" x="-19" y="-78" width="38" height="30" rx="10"/>
+<path class="gb" d="M-19 -68v-2a10 10 0 0 1 10-10h18a10 10 0 0 1 10 10v2z"/>
+<rect class="gb" x="-25" y="-70" width="50" height="5" rx="2.5"/>
+<circle class="eye" cx="-7" cy="-59" r="2.8"/>
+<circle class="eye" cx="7" cy="-59" r="2.8"/>
+<path class="ln" d="M-5 -53H5"/>
+<path class="arm" d="M-17 -38q-11 5 -9 18M17 -38q11 5 9 18"/>
+<rect class="gb" x="-17" y="-46" width="34" height="32" rx="8"/>
+<circle class="hatc" cx="-7" cy="-36" r="4"/>
+<rect class="gb" x="-13" y="-14" width="9" height="14" rx="3"/>
+<rect class="gb" x="4" y="-14" width="9" height="14" rx="3"/>
+</g>
+<g id="worker">
+<rect class="face" x="-17" y="-70" width="34" height="27" rx="9"/>
+<path class="hatc" d="M-17 -62a17 14 0 0 1 34 0z"/>
+<rect class="hatc" x="-21" y="-64" width="42" height="5" rx="2.5"/>
+<circle class="eye" cx="-6" cy="-54" r="2.6"/>
+<circle class="eye" cx="6" cy="-54" r="2.6"/>
+<path class="ln" d="M-5 -48q5 4 10 0"/>
+<path class="arm" d="M-15 -34q-10 5 -8 16M15 -34q10 -2 12 -14"/>
+<circle class="ln" cx="29" cy="-53" r="5"/>
+<rect class="wbd" x="-15" y="-41" width="30" height="28" rx="7"/>
+<rect class="wbd" x="-12" y="-13" width="8" height="13" rx="3"/>
+<rect class="wbd" x="4" y="-13" width="8" height="13" rx="3"/>
+</g>
+<g id="owner">
+<path class="ob" d="M-17 0v-30a17 17 0 0 1 34 0v30z"/>
+<circle class="face" cx="0" cy="-62" r="14"/>
+<path class="hair" d="M-14 -63a14 14 0 0 1 28 0q-5 -8 -14 -6q-9 -2 -14 6z"/>
+<circle class="eye" cx="-5" cy="-60" r="2.2"/>
+<circle class="eye" cx="5" cy="-60" r="2.2"/>
+<path class="ln" d="M-4 -54q4 3 8 0"/>
+</g>
+<g id="paper">
+<rect class="pp" x="-17" y="-22" width="34" height="44" rx="3"/>
+<path class="ln thin" d="M-10 -12H10M-10 -4H10M-10 4H10M-10 12H3"/>
+</g>
+<g id="mail">
+<rect class="pp" x="-16" y="-11" width="32" height="22" rx="3"/>
+<path class="ln thin" d="M-16 -9L0 3L16 -9"/>
+</g>
+<g id="book">
+<rect class="bk" x="-20" y="-28" width="40" height="28" rx="3"/>
+<path class="ln thin" d="M-12 -28V0M-6 -20H13M-6 -13H13M-6 -6H6"/>
+</g>
+<g id="clock">
+<path class="ln" d="M-9 -3L-12 0M9 -3L12 0"/>
+<circle class="hatc" cx="-9" cy="-26" r="4"/>
+<circle class="hatc" cx="9" cy="-26" r="4"/>
+<circle class="pp" cx="0" cy="-14" r="12"/>
+<path class="ln thin" d="M0 -14V-21M0 -14H5"/>
+</g>
+</defs>
+
+<rect class="bg" width="960" height="780" rx="8"/>
+<text class="h" x="20" y="44">One dispatch: the usual path, and four detours</text>
+<text x="20" y="66">The usual path runs along the top. Each panel below is one way it can go differently.</text>
+
+<g transform="translate(20 84)">
+<rect class="panel" width="920" height="140" rx="12"/>
+<use href="#paper" x="70" y="50"/>
+<text class="t" x="70" y="100" text-anchor="middle">contract</text>
+<text class="sm" x="70" y="118" text-anchor="middle">master writes it</text>
+<path class="go2" d="M108 50H162"/>
+<use href="#guard" transform="translate(200 76) scale(.6)"/>
+<text class="t" x="200" y="100" text-anchor="middle">check</text>
+<text class="sm" x="200" y="118" text-anchor="middle">gate, before start</text>
+<path class="go2" d="M238 50H292"/>
+<rect class="pp" x="306" y="30" width="48" height="40" rx="5"/><path class="ln thin" d="M306 41H354"/>
+<text class="t" x="330" y="100" text-anchor="middle">start</text>
+<text class="sm" x="330" y="118" text-anchor="middle">Orca opens a room</text>
+<path class="go2" d="M368 50H422"/>
+<use href="#book" x="460" y="66"/>
+<text class="t" x="460" y="100" text-anchor="middle">register</text>
+<text class="sm" x="460" y="118" text-anchor="middle">gate, on the ledger</text>
+<path class="go2" d="M498 50H552"/>
+<use href="#worker" transform="translate(590 76) scale(.6)"/>
+<text class="t" x="590" y="100" text-anchor="middle">work</text>
+<text class="sm" x="590" y="118" text-anchor="middle">worker's turn</text>
+<path class="go2" d="M628 50H682"/>
+<circle class="ln" cx="716" cy="46" r="13"/><path class="arm" d="M726 56L736 68"/>
+<text class="t" x="720" y="100" text-anchor="middle">verify</text>
+<text class="sm" x="720" y="118" text-anchor="middle">master checks it</text>
+<path class="go2" d="M758 50H812"/>
+<circle class="okc" cx="850" cy="50" r="18"/><path class="chk" d="M842 50l6 6l11-12"/>
+<text class="t" x="850" y="100" text-anchor="middle">accept</text>
+<text class="sm" x="850" y="118" text-anchor="middle">merged</text>
+<circle class="badr" cx="230" cy="22" r="10"/>
+<text class="num" x="230" y="26.5" text-anchor="middle" style="font-size:11.5px">A</text>
+<circle class="badr" cx="490" cy="22" r="10"/>
+<text class="num" x="490" y="26.5" text-anchor="middle" style="font-size:11.5px">B</text>
+<circle class="bada" cx="620" cy="22" r="10"/>
+<text class="num" x="620" y="26.5" text-anchor="middle" style="font-size:11.5px">C</text>
+<circle class="bada" cx="750" cy="22" r="10"/>
+<text class="num" x="750" y="26.5" text-anchor="middle" style="font-size:11.5px">D</text>
+</g>
+
+<g transform="translate(20 236)">
+<rect class="panel" width="455" height="256" rx="12"/>
+<circle class="badr" cx="26" cy="28" r="13"/>
+<text class="num" x="26" y="32.5" text-anchor="middle">A</text>
+<text class="t" x="48" y="33">The gate says no before the start</text>
+<path class="gr" d="M20 206H435"/>
+<use href="#guard" x="80" y="206"/>
+<rect class="bub" x="16" y="52" width="156" height="48" rx="14"/>
+<path class="bub" d="M73 99L80 114L87 99"/>
+<text class="say" x="94" y="72" text-anchor="middle">Not like this.</text>
+<text class="say" x="94" y="89" text-anchor="middle">The cap is used up.</text>
+<rect class="gb" x="128" y="150" width="12" height="56" rx="3"/>
+<circle class="low" cx="134" cy="139" r="7"/>
+<circle class="ln thin" cx="134" cy="139" r="7"/>
+<rect class="pp" x="132" y="147" width="96" height="10" rx="5"/>
+<path class="stripe" d="M154 148v8M174 148v8M194 148v8"/>
+<use href="#paper" x="276" y="178"/>
+<g transform="translate(280 176) rotate(-14)">
+<rect class="stampx" x="-18" y="-10" width="36" height="20" rx="4"/>
+<text class="stopt" x="0" y="4" text-anchor="middle">NO</text>
+</g>
+<use href="#master" x="368" y="206"/>
+<rect class="bub" x="280" y="46" width="152" height="48" rx="14"/>
+<path class="bub" d="M361 93L368 108L375 93"/>
+<text class="say" x="356" y="66" text-anchor="middle">No worker started.</text>
+<text class="say" x="356" y="83" text-anchor="middle">I fix it and retry.</text>
+<text x="20" y="228"><tspan class="m k">refused at check</tspan></text>
+<text x="20" y="244">nothing runs yet: fix what the line says, then dispatch again</text>
+</g>
+<g transform="translate(485 236)">
+<rect class="panel" width="455" height="256" rx="12"/>
+<circle class="badr" cx="26" cy="28" r="13"/>
+<text class="num" x="26" y="32.5" text-anchor="middle">B</text>
+<text class="t" x="48" y="33">The gate says no after the start</text>
+<path class="gr" d="M20 206H435"/>
+<use href="#guard" x="80" y="206"/>
+<rect class="bub" x="16" y="52" width="160" height="48" rx="14"/>
+<path class="bub" d="M73 99L80 114L87 99"/>
+<text class="say" x="96" y="72" text-anchor="middle">It runs on a bigger</text>
+<text class="say" x="96" y="89" text-anchor="middle">model than declared.</text>
+<rect class="gb" x="128" y="150" width="12" height="56" rx="3"/>
+<circle class="low" cx="134" cy="139" r="7"/>
+<circle class="ln thin" cx="134" cy="139" r="7"/>
+<rect class="pp" x="132" y="147" width="96" height="10" rx="5"/>
+<path class="stripe" d="M154 148v8M174 148v8M194 148v8"/>
+<path class="ln thin" d="M168 157V166M196 157V166"/>
+<rect class="note" x="156" y="166" width="52" height="22" rx="3"/>
+<text class="holdt" x="182" y="181" text-anchor="middle">HOLD</text>
+<rect class="pp" x="286" y="74" width="150" height="132" rx="8"/>
+<path class="ln thin" d="M286 92H436"/>
+<circle class="dot" cx="298" cy="83" r="3"/>
+<circle class="dot" cx="308" cy="83" r="3"/>
+<circle class="dot" cx="318" cy="83" r="3"/>
+<path class="sk" d="M300 160H334M300 176H322"/>
+<use href="#worker" x="392" y="204"/>
+<rect class="bub" x="294" y="100" width="76" height="38" rx="12"/>
+<path class="bub" d="M354 137L373 146L366 126"/>
+<text class="say" x="332" y="116" text-anchor="middle" style="font-size:12px">Already</text>
+<text class="say" x="332" y="131" text-anchor="middle" style="font-size:12px">running!</text>
+<text x="20" y="228"><tspan class="m k">refused at register</tspan>, <tspan class="m k">override-hold</tspan></text>
+<text x="20" y="244">its worker already runs: nobody starts until it is settled</text>
+</g>
+<g transform="translate(20 504)">
+<rect class="panel" width="455" height="256" rx="12"/>
+<circle class="bada" cx="26" cy="28" r="13"/>
+<text class="num" x="26" y="32.5" text-anchor="middle">C</text>
+<text class="t" x="48" y="33">The worker goes quiet</text>
+<path class="gr" d="M20 206H435"/>
+<use href="#master" x="64" y="206"/>
+<use href="#clock" x="114" y="206"/>
+<path class="ln thin" d="M98 170l-6 -6M130 170l6 -6M114 164v-8"/>
+<rect class="bub" x="16" y="46" width="140" height="48" rx="14"/>
+<path class="bub" d="M57 93L64 108L71 93"/>
+<text class="say" x="86" y="66" text-anchor="middle">No report yet.</text>
+<text class="say" x="86" y="83" text-anchor="middle">Still there?</text>
+<text x="170" y="134">its agent ended:</text>
+<text x="170" y="151"><tspan class="m k">resume</tspan> wakes it</text>
+<text x="170" y="180">Orca restarted:</text>
+<text x="170" y="197">ask for it again</text>
+<rect class="pp" x="300" y="74" width="136" height="132" rx="8"/>
+<path class="ln thin" d="M300 92H436"/>
+<circle class="dot" cx="312" cy="83" r="3"/>
+<circle class="dot" cx="322" cy="83" r="3"/>
+<circle class="dot" cx="332" cy="83" r="3"/>
+<use href="#worker" x="364" y="204"/>
+<text class="zz" x="392" y="122">z z z</text>
+<text x="20" y="228"><tspan class="m k">watch</tspan> rings, then <tspan class="m k">resume</tspan></text>
+<text x="20" y="244">the same dispatch goes on: no new attempt is used</text>
+</g>
+<g transform="translate(485 504)">
+<rect class="panel" width="455" height="256" rx="12"/>
+<circle class="bada" cx="26" cy="28" r="13"/>
+<text class="num" x="26" y="32.5" text-anchor="middle">D</text>
+<text class="t" x="48" y="33">The result is not good enough</text>
+<path class="gr" d="M20 206H435"/>
+<use href="#master" x="64" y="206"/>
+<circle class="ln" cx="104" cy="170" r="10"/>
+<path class="arm" d="M111 178L119 188"/>
+<rect class="bub" x="16" y="46" width="144" height="48" rx="14"/>
+<path class="bub" d="M57 93L64 108L71 93"/>
+<text class="say" x="88" y="66" text-anchor="middle">Not what the</text>
+<text class="say" x="88" y="83" text-anchor="middle">contract asked.</text>
+<text x="236" y="94" text-anchor="middle">attempt 2 of 3</text>
+<circle class="stampx" cx="212" cy="114" r="8"/>
+<path class="cut" d="M208 110l8 8M216 110l-8 8" style="stroke-width:2"/>
+<circle class="kf" cx="236" cy="114" r="8"/>
+<circle class="pp" cx="260" cy="114" r="8"/>
+<path class="go2" d="M132 164H200"/>
+<use href="#paper" x="236" y="164"/>
+<path class="go2" d="M272 164H338"/>
+<text x="236" y="200" text-anchor="middle">fix contract</text>
+<use href="#worker" x="384" y="206"/>
+<rect class="bub" x="328" y="70" width="108" height="32" rx="14"/>
+<path class="bub" d="M377 101L384 116L391 101"/>
+<text class="say" x="382" y="91" text-anchor="middle">I will fix it.</text>
+<text x="20" y="228"><tspan class="m k">dispatch --follows</tspan></text>
+<text x="20" y="244">next attempt of the same task: three at most, then stop</text>
+</g>
+</svg>

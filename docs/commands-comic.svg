@@ -1,0 +1,232 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 634" width="960" height="634" role="img" aria-labelledby="t d">
+<title id="t">The commands of orchestration-kit, one picture each</title>
+<desc id="d">Set up: start opens a fresh master in Orca from any other terminal; prepare gets a project folder ready, known to Orca and carrying the worker's rules. Run work: dispatch sends one contract through the gate and starts its worker; watch is the alarm clock that wakes the master when Orca does not, and only reads. Look: status says where each job stands and what it waits for, and only reads; report counts the tokens each job used against its budget. Recover: resume wakes a worker whose agent ended before it reported; override-hold lifts, on the owner's word, the hold a refused worker left behind. Hand over: succeed checks the handoff note and calls in a successor; inherit is the successor signing in, and PASS closes the old terminal.</desc>
+<style>
+:root{--bg:#fff;--panel:#f6f8fa;--box:#fff;--line:#d0d7de;--ink:#1f2328;--muted:#59636e;--kit:#0969da;--kit-soft:#ddf4ff;--ok:#1a7f37;--ok-soft:#dafbe1;--stop:#cf222e;--warn:#9a6700;--warn-soft:#fff8c5;--guard:#8c959f;--hat:#eac54f;--wb:#d0d7de}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--panel:#151b23;--box:#0d1117;--line:#3d444d;--ink:#f0f6fc;--muted:#9198a1;--kit:#1f6feb;--kit-soft:#111d2e;--ok:#238636;--ok-soft:#12261e;--stop:#f85149;--warn:#d29922;--warn-soft:#272115;--guard:#656c76;--hat:#bb8009;--wb:#3d444d}}
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;font-size:12.5px;fill:var(--muted)}
+.h{font-size:20px;font-weight:700;fill:var(--ink)}
+.t{font-size:14.5px;font-weight:600;fill:var(--ink)}
+.say{font-size:13px;fill:var(--ink)}
+.m{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+.k{fill:var(--kit);font-weight:600}
+.num{font-size:13px;font-weight:700;fill:var(--bg)}
+.sm{font-size:11px}
+.cap2{font-size:10.5px;font-weight:700;letter-spacing:1.2px;fill:var(--ink)}
+.tiny{font-size:10px;font-weight:600;fill:var(--warn)}
+.stampt{font-size:11px;font-weight:700;letter-spacing:.8px;fill:var(--ok)}
+.bg{fill:var(--bg)}
+.panel{fill:var(--panel);stroke:var(--line)}
+.gr{fill:none;stroke:var(--line);stroke-width:2;stroke-linecap:round}
+.sk{fill:none;stroke:var(--line);stroke-width:5;stroke-linecap:round}
+.ln{fill:none;stroke:var(--ink);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.thin{stroke-width:1.5}
+.arm{fill:none;stroke:var(--ink);stroke-width:2.5;stroke-linecap:round}
+.face{fill:var(--box);stroke:var(--ink);stroke-width:2}
+.eye,.hair{fill:var(--ink)}
+.kf{fill:var(--kit)}
+.kb{fill:var(--kit);stroke:var(--ink);stroke-width:2}
+.gb{fill:var(--guard);stroke:var(--ink);stroke-width:2}
+.wbd{fill:var(--wb);stroke:var(--ink);stroke-width:2}
+.ob{fill:var(--ok);stroke:var(--ink);stroke-width:2}
+.hatc{fill:var(--hat);stroke:var(--ink);stroke-width:2}
+.pp{fill:var(--box);stroke:var(--ink);stroke-width:1.75}
+.bk{fill:var(--kit-soft);stroke:var(--ink);stroke-width:1.75}
+.bub{fill:var(--box);stroke:var(--ink);stroke-width:1.5;stroke-linejoin:round}
+.dot{fill:var(--line)}
+.note{fill:var(--warn-soft);stroke:var(--warn);stroke-width:1.5}
+.stripe{fill:none;stroke:var(--stop);stroke-width:8}
+.stamp{fill:var(--ok-soft);stroke:var(--ok);stroke-width:2}
+.okc{fill:var(--ok-soft);stroke:var(--ok);stroke-width:2.5}
+.chk{fill:none;stroke:var(--ok);stroke-width:4;stroke-linecap:round;stroke-linejoin:round}
+.wc{fill:var(--warn-soft);stroke:var(--warn);stroke-width:2.5}
+.loop{fill:none;stroke:var(--warn);stroke-width:3;stroke-linecap:round;marker-end:url(#lp)}
+.lph{fill:var(--warn)}
+.low{fill:var(--stop)}
+.go{fill:none;stroke:var(--kit);stroke-width:2;stroke-linecap:round;marker-end:url(#go)}
+.goh{fill:var(--kit)}
+:root{--stop-soft:#ffebe9}
+@media (prefers-color-scheme:dark){:root{--stop-soft:#25171c}}
+.kitp{fill:var(--kit-soft);stroke:var(--kit)}
+.stampx{fill:var(--stop-soft);stroke:var(--stop);stroke-width:2}
+.stopt{font-size:11px;font-weight:700;letter-spacing:.8px;fill:var(--stop)}
+.holdt{font-size:11px;font-weight:700;letter-spacing:1px;fill:var(--warn)}
+.mini{font-size:8.5px;font-weight:700;letter-spacing:.6px}
+.zz{font-size:13px;font-weight:700;fill:var(--muted)}
+.badr{fill:var(--stop)}
+.bada{fill:var(--warn)}
+.okf{fill:var(--ok)}
+.wf{fill:var(--warn)}
+.cut{fill:none;stroke:var(--stop);stroke-width:3;stroke-linecap:round}
+.go2{fill:none;stroke:var(--muted);stroke-width:2;stroke-linecap:round;marker-end:url(#g2)}
+.g2h{fill:var(--muted)}
+</style>
+<defs>
+<marker id="g2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="g2h" d="M0 0L10 5L0 10z"/></marker>
+<marker id="lp" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path class="lph" d="M0 0L10 5L0 10z"/></marker>
+<marker id="go" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="goh" d="M0 0L10 5L0 10z"/></marker>
+<!-- the cast: each stands on its own origin -->
+<g id="master">
+<path class="ln" d="M0 -78V-87"/>
+<circle class="kf" cx="0" cy="-91" r="4"/>
+<rect class="face" x="-19" y="-78" width="38" height="30" rx="10"/>
+<circle class="eye" cx="-7" cy="-64" r="2.8"/>
+<circle class="eye" cx="7" cy="-64" r="2.8"/>
+<path class="ln" d="M-6 -56q6 5 12 0"/>
+<path class="arm" d="M-17 -38q-11 5 -9 18M17 -38q11 5 9 18"/>
+<rect class="kb" x="-17" y="-46" width="34" height="32" rx="8"/>
+<rect class="face" x="-6" y="-40" width="12" height="15" rx="2"/>
+<path class="ln thin" d="M-3 -35H3M-3 -31H3"/>
+<rect class="kb" x="-13" y="-14" width="9" height="14" rx="3"/>
+<rect class="kb" x="4" y="-14" width="9" height="14" rx="3"/>
+</g>
+<g id="guard">
+<rect class="face" x="-19" y="-78" width="38" height="30" rx="10"/>
+<path class="gb" d="M-19 -68v-2a10 10 0 0 1 10-10h18a10 10 0 0 1 10 10v2z"/>
+<rect class="gb" x="-25" y="-70" width="50" height="5" rx="2.5"/>
+<circle class="eye" cx="-7" cy="-59" r="2.8"/>
+<circle class="eye" cx="7" cy="-59" r="2.8"/>
+<path class="ln" d="M-5 -53H5"/>
+<path class="arm" d="M-17 -38q-11 5 -9 18M17 -38q11 5 9 18"/>
+<rect class="gb" x="-17" y="-46" width="34" height="32" rx="8"/>
+<circle class="hatc" cx="-7" cy="-36" r="4"/>
+<rect class="gb" x="-13" y="-14" width="9" height="14" rx="3"/>
+<rect class="gb" x="4" y="-14" width="9" height="14" rx="3"/>
+</g>
+<g id="worker">
+<rect class="face" x="-17" y="-70" width="34" height="27" rx="9"/>
+<path class="hatc" d="M-17 -62a17 14 0 0 1 34 0z"/>
+<rect class="hatc" x="-21" y="-64" width="42" height="5" rx="2.5"/>
+<circle class="eye" cx="-6" cy="-54" r="2.6"/>
+<circle class="eye" cx="6" cy="-54" r="2.6"/>
+<path class="ln" d="M-5 -48q5 4 10 0"/>
+<path class="arm" d="M-15 -34q-10 5 -8 16M15 -34q10 -2 12 -14"/>
+<circle class="ln" cx="29" cy="-53" r="5"/>
+<rect class="wbd" x="-15" y="-41" width="30" height="28" rx="7"/>
+<rect class="wbd" x="-12" y="-13" width="8" height="13" rx="3"/>
+<rect class="wbd" x="4" y="-13" width="8" height="13" rx="3"/>
+</g>
+<g id="owner">
+<path class="ob" d="M-17 0v-30a17 17 0 0 1 34 0v30z"/>
+<circle class="face" cx="0" cy="-62" r="14"/>
+<path class="hair" d="M-14 -63a14 14 0 0 1 28 0q-5 -8 -14 -6q-9 -2 -14 6z"/>
+<circle class="eye" cx="-5" cy="-60" r="2.2"/>
+<circle class="eye" cx="5" cy="-60" r="2.2"/>
+<path class="ln" d="M-4 -54q4 3 8 0"/>
+</g>
+<g id="paper">
+<rect class="pp" x="-17" y="-22" width="34" height="44" rx="3"/>
+<path class="ln thin" d="M-10 -12H10M-10 -4H10M-10 4H10M-10 12H3"/>
+</g>
+<g id="mail">
+<rect class="pp" x="-16" y="-11" width="32" height="22" rx="3"/>
+<path class="ln thin" d="M-16 -9L0 3L16 -9"/>
+</g>
+<g id="book">
+<rect class="bk" x="-20" y="-28" width="40" height="28" rx="3"/>
+<path class="ln thin" d="M-12 -28V0M-6 -20H13M-6 -13H13M-6 -6H6"/>
+</g>
+<g id="clock">
+<path class="ln" d="M-9 -3L-12 0M9 -3L12 0"/>
+<circle class="hatc" cx="-9" cy="-26" r="4"/>
+<circle class="hatc" cx="9" cy="-26" r="4"/>
+<circle class="pp" cx="0" cy="-14" r="12"/>
+<path class="ln thin" d="M0 -14V-21M0 -14H5"/>
+</g>
+</defs>
+
+<rect class="bg" width="960" height="634" rx="8"/>
+<text class="h" x="20" y="44">The commands, one picture each</text>
+<text x="20" y="66">The ten commands of the wrapper, in the order a master meets them.</text>
+
+<text class="t" x="20" y="130">Set up</text>
+<text x="20" y="148">before the first worker</text>
+<g transform="translate(170 84)">
+<rect class="pp" width="380" height="98" rx="10"/>
+<rect class="panel" x="10" y="10" width="92" height="78" rx="8"/>
+<rect class="pp" x="26" y="20" width="60" height="58" rx="5"/><path class="ln thin" d="M26 31H86"/><use href="#master" transform="translate(56 76) scale(.42)"/>
+<text class="t m" x="116" y="36">start</text>
+<text x="116" y="58">Open a fresh master in Orca,</text>
+<text x="116" y="75">from any other terminal.</text>
+</g>
+<g transform="translate(560 84)">
+<rect class="pp" width="380" height="98" rx="10"/>
+<rect class="panel" x="10" y="10" width="92" height="78" rx="8"/>
+<path class="bk" d="M22 34h18l6 7h26v32h-50z"/><rect class="note" x="56" y="50" width="32" height="26" rx="3"/><path class="ln thin" d="M62 59H82M62 66H76"/>
+<text class="t m" x="116" y="36">prepare</text>
+<text x="116" y="58">Get a project folder ready: known</text>
+<text x="116" y="75">to Orca, with the worker's rules.</text>
+</g>
+<text class="t" x="20" y="238">Run work</text>
+<text x="20" y="256">one worker per contract</text>
+<g transform="translate(170 192)">
+<rect class="pp" width="380" height="98" rx="10"/>
+<rect class="panel" x="10" y="10" width="92" height="78" rx="8"/>
+<use href="#paper" transform="translate(32 50) scale(.72)"/><path class="go2" d="M48 50H60"/><rect class="gb" x="66" y="44" width="8" height="32" rx="2"/><g transform="rotate(-42 70 47)"><rect class="pp" x="69" y="43" width="30" height="8" rx="4"/></g>
+<text class="t m" x="116" y="36">dispatch</text>
+<text x="116" y="58">Send one contract through the gate</text>
+<text x="116" y="75">and start its worker.</text>
+</g>
+<g transform="translate(560 192)">
+<rect class="pp" width="380" height="98" rx="10"/>
+<rect class="panel" x="10" y="10" width="92" height="78" rx="8"/>
+<use href="#clock" transform="translate(56 80) scale(1.5)"/><path class="ln thin" d="M27 36l-7 -6M85 36l7 -6"/>
+<text class="t m" x="116" y="36">watch</text>
+<text x="116" y="58">The alarm clock: wakes the master</text>
+<text x="116" y="75">when Orca does not. Only reads.</text>
+</g>
+<text class="t" x="20" y="346">Look</text>
+<text x="20" y="364">where things stand</text>
+<g transform="translate(170 300)">
+<rect class="pp" width="380" height="98" rx="10"/>
+<rect class="panel" x="10" y="10" width="92" height="78" rx="8"/>
+<circle class="okf" cx="28" cy="30" r="4.5"/><path class="sk" d="M40 30H72"/><circle class="wf" cx="28" cy="48" r="4.5"/><path class="sk" d="M40 48H62"/><circle class="dot" cx="28" cy="66" r="4.5"/><path class="sk" d="M40 66H56"/><circle class="ln" cx="76" cy="56" r="11"/><path class="arm" d="M84 65L93 76"/>
+<text class="t m" x="116" y="36">status</text>
+<text x="116" y="58">Where does each job stand, and</text>
+<text x="116" y="75">what is it waiting for? Only reads.</text>
+</g>
+<g transform="translate(560 300)">
+<rect class="pp" width="380" height="98" rx="10"/>
+<rect class="panel" x="10" y="10" width="92" height="78" rx="8"/>
+<use href="#book" x="40" y="74"/><rect class="kf" x="66" y="54" width="8" height="20" rx="1.5"/><rect class="kf" x="78" y="40" width="8" height="34" rx="1.5"/><rect class="kf" x="90" y="60" width="8" height="14" rx="1.5"/><path class="cut" d="M62 48H100" style="stroke-width:1.5;stroke-dasharray:3 3"/>
+<text class="t m" x="116" y="36">report</text>
+<text x="116" y="58">Count the tokens each job used,</text>
+<text x="116" y="75">against its budget.</text>
+</g>
+<text class="t" x="20" y="454">Recover</text>
+<text x="20" y="472">when a worker is stuck</text>
+<g transform="translate(170 408)">
+<rect class="pp" width="380" height="98" rx="10"/>
+<rect class="panel" x="10" y="10" width="92" height="78" rx="8"/>
+<use href="#worker" transform="translate(40 80) scale(.55)"/><text class="zz" x="18" y="32" style="font-size:11px">z z</text><path class="kf" d="M72 38l20 12l-20 12z"/>
+<text class="t m" x="116" y="36">resume</text>
+<text x="116" y="58">Wake a worker whose agent ended</text>
+<text x="116" y="75">before it reported.</text>
+</g>
+<g transform="translate(560 408)">
+<rect class="pp" width="380" height="98" rx="10"/>
+<rect class="panel" x="10" y="10" width="92" height="78" rx="8"/>
+<use href="#owner" transform="translate(30 80) scale(.55)"/><rect class="note" x="52" y="34" width="44" height="20" rx="3"/><text class="holdt" x="74" y="48" text-anchor="middle" style="font-size:9.5px">HOLD</text><path class="cut" d="M50 56L98 32"/>
+<text class="t m" x="116" y="36">override-hold</text>
+<text x="116" y="58">On the owner's word, lift the hold</text>
+<text x="116" y="75">a refused worker left behind.</text>
+</g>
+<text class="t" x="20" y="562">Hand over</text>
+<text x="20" y="580">master to successor</text>
+<g transform="translate(170 516)">
+<rect class="pp" width="380" height="98" rx="10"/>
+<rect class="panel" x="10" y="10" width="92" height="78" rx="8"/>
+<use href="#master" transform="translate(30 78) scale(.42)"/><use href="#paper" transform="translate(60 52) scale(.62)"/><path class="go2" d="M74 52H94"/>
+<text class="t m" x="116" y="36">succeed</text>
+<text x="116" y="58">Check the handoff note and call</text>
+<text x="116" y="75">in a successor.</text>
+</g>
+<g transform="translate(560 516)">
+<rect class="pp" width="380" height="98" rx="10"/>
+<rect class="panel" x="10" y="10" width="92" height="78" rx="8"/>
+<use href="#master" transform="translate(32 78) scale(.42)"/><use href="#book" transform="translate(78 78) scale(.7)"/><g transform="translate(74 38) rotate(-10)"><rect class="stamp" x="-20" y="-9" width="40" height="18" rx="4"/><text class="stampt mini" x="0" y="3.5" text-anchor="middle">PASS</text></g>
+<text class="t m" x="116" y="36">inherit</text>
+<text x="116" y="58">The successor signs in. PASS</text>
+<text x="116" y="75">closes the old terminal.</text>
+</g>
+</svg>
