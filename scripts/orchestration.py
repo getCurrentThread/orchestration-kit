@@ -13,6 +13,9 @@ Run from the workspace root as `python -X utf8 -s -B orchestration.py <command>`
   resume    bring back the Claude session of a worker whose agent ended without a report, in its own terminal and
             for its own dispatch
   status    say where every dispatch that `report` has not measured stands, and the step it waits for (only reads)
+  override-hold
+            on the owner's word, end the hold of one dispatch that the gate refused at register and that Orca keeps
+            under an outcome this code does not know, once Orca shows its agent exited
 
 State is kept in ./.orchestration/ of the current directory.
 """
@@ -59,6 +62,7 @@ HANDOFF_HEADINGS = (
 SETTLED = ("succeeded", "failed")
 HELD = ("open", "unknown", "unread")  # the states of a dispatch that `dispatch` still holds a contract and a task for
 ATTEMPTS = 3  # at one task; a fourth rarely differs from the third, and the contract or the task has to change
+OVERRIDES = "hold-overrides.jsonl"  # in the state folder: the refused dispatches whose hold the owner has ended
 OPEN_SECONDS = 120  # for `orca open` to bring the app up
 HANDOFF_TEMPLATE = ROOT / "skills" / "master" / "handoff-template.md"
 ROLES = (
@@ -205,9 +209,10 @@ def contract_title(contract: str) -> str:
     return Path(contract).stem
 
 
-def ledger_rows() -> list[dict]:
-    """Return the rows of this workspace's dispatch ledger. A line that is not a JSON object is left out."""
-    ledger = state_dir() / "dispatch-ledger.jsonl"
+def ledger_rows(name: str = "dispatch-ledger.jsonl") -> list[dict]:
+    """Return the rows of this workspace's dispatch ledger, or of another JSON-lines file of its state folder. A line
+    that is not a JSON object is left out."""
+    ledger = state_dir() / name
     rows = []
     for line in ledger.read_text(encoding="utf-8", errors="replace").splitlines() if ledger.exists() else []:
         try:
@@ -260,6 +265,30 @@ def dispatch_state(answer: dict) -> tuple[str, object]:
     return outcome_state(outcome), outcome
 
 
+def overridable(answer: dict) -> bool:
+    """Whether the hold of a dispatch the gate refused at register may be ended on the owner's word (`override-hold`):
+    Orca answers about it, gives it an outcome this code does not know, and shows its agent exited.
+
+    One that Orca shows open is stopped instead, and an answer that cannot be read shows nothing about its worker:
+    neither is ever passed over, so an override starts no worker beside one that may run. `exited` is the verdict Orca
+    gave a worker after `worker-stop` (5 scratch workers), after its terminal was closed (1) and after its release (9),
+    on Orca 1.4.259 on 2026-11-16. No dispatch there had an outcome outside the three known ones, so an unknown outcome
+    together with `exited` is read from Orca's code and was not measured.
+    """
+    return dispatch_state(answer)[0] == "unknown" and pluck(answer, "result", "projection", "liveness", "verdict") == "exited"
+
+
+def hold_overrides() -> dict[str, str]:
+    """Map every refused dispatch whose hold the owner has ended with `override-hold` to the reason given, on one line.
+
+    A record without a dispatch or without a reason is none: `override-hold` writes neither.
+    """
+    return {
+        row["job_id"]: " ".join(row["reason"].split()) for row in ledger_rows(OVERRIDES)
+        if isinstance(row.get("job_id"), str) and isinstance(row.get("reason"), str) and row["reason"].strip()
+    }
+
+
 def task_of(row: dict) -> object:
     """Return the task a registered dispatch belongs to: the Orca Task of the first dispatch at it.
 
@@ -283,8 +312,11 @@ def same_contract(contract: str) -> list[str]:
     return [row["job_id"] for row in ledger_rows() if row.get("contract_sha") == sha and row.get("job_id")]
 
 
-def unsettled_dispatch(earlier: list[str]) -> tuple[str, object, str] | None:
+def unsettled_dispatch(earlier: list[str], cleared: dict | tuple = ()) -> tuple[str, object, str] | None:
     """Return the newest of these dispatches that Orca does not show as settled, with the outcome it gives and its state.
+
+    cleared holds the refused dispatches whose hold the owner has ended: one of them is passed over only while
+    `overridable` is true of Orca's answer now, whatever it was when the override was recorded.
 
     A second worker on one contract, or on one task, repeats the first one's edits in the same files. It is
     asked for most often after an Orca restart, when the first worker's report is missing and its work is not.
@@ -294,8 +326,9 @@ def unsettled_dispatch(earlier: list[str]) -> tuple[str, object, str] | None:
     know, leaves it held.
     """
     for dispatch_id in dict.fromkeys(reversed(earlier)):
-        state, outcome = dispatch_state(orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full"))
-        if state in HELD:
+        answer = orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full")
+        state, outcome = dispatch_state(answer)
+        if state in HELD and not (dispatch_id in cleared and overridable(answer)):
             return dispatch_id, outcome, state
     return None
 
@@ -581,6 +614,29 @@ def dispatch(args: argparse.Namespace) -> int:
             f"(its outcome: {outcome}). Look at it with `orca orchestration worker-show --dispatch {running}` and "
             f"dispatch again once Orca shows it settled"
             + ("; a contract that differs from the earlier one is not held" if running in same else "")
+        )
+    # A register the gate refused leaves its worker running, and the row the gate writes for it names no contract,
+    # and not always its task (measured on 2026-11-16: the same contract started a second worker beside it). So such
+    # a row holds every dispatch. The gate writes one for MODEL_TIER_ESCALATION and ORCHESTRATION_UNVERIFIED only: a
+    # register it refuses for another reason leaves no row, and nothing here holds for it.
+    # Read only where a ledger is: a dispatch that is refused further down leaves no state folder behind.
+    rows = ledger_rows() if (Path.cwd() / ".orchestration" / "dispatch-ledger.jsonl").is_file() else []
+    refused = [row["job_id"] for row in rows if row.get("job_id") and row.get("decision") != "ALLOW"]
+    if unaccepted := unsettled_dispatch(refused, hold_overrides() if refused else ()):
+        running, outcome, state = unaccepted
+        print(json.dumps({"stage": "check", "allow": False, "reason": "UNACCEPTED_WORKER_RUNNING", "dispatch": running, "outcome": outcome, "state": state}))
+        if state == "open":
+            return fail(
+                f"the gate refused the register of dispatch {running}, and Orca shows it open: its worker runs unaccepted. "
+                f"Stop it with `orca orchestration worker-stop --dispatch {running}`, tell the owner, and dispatch again"
+            )
+        return fail(
+            f"the gate refused the register of dispatch {running}, and Orca does not show that dispatch as settled (its "
+            f"outcome: {outcome}), so its worker may still run unaccepted. Look at it with `orca orchestration worker-show "
+            f"--dispatch {running}`, stop it with `orca orchestration worker-stop --dispatch {running}` if it runs, and "
+            "dispatch again once Orca shows it settled. It holds every dispatch of this workspace: tell the owner if it "
+            f"stays. Only on the owner's word, `ORCHESTRATION override-hold --dispatch {running} --reason \"<the owner's "
+            "reason>\"` ends this hold, once Orca shows its agent exited"
         )
     place = ["--worktree", args.worktree or "current"]
     new = args.worktree in ("new-top-level", "new-child")  # a worktree that Orca makes for this worker
@@ -1709,11 +1765,11 @@ def resume(args: argparse.Namespace) -> int:
     return 0
 
 
-def step_of(dispatch_id: str, answer: dict, siblings: list[str], refused: bool) -> str | None:
+def step_of(dispatch_id: str, answer: dict, siblings: list[str], refused: bool, ended: object = None) -> str | None:
     """Return the words after a dispatch's name in a `status` line: where it stands, and the step it waits for.
 
     siblings are the dispatches of its task, oldest first. A refused one (its register was denied) is named only while
-    its worker may still run, and then it is to be stopped.
+    its worker may still run, and then it is to be stopped. ended is the reason the owner gave to end its hold, if any.
     """
     state, outcome = dispatch_state(answer)
     if refused and state not in HELD:
@@ -1768,7 +1824,15 @@ def step_of(dispatch_id: str, answer: dict, siblings: list[str], refused: bool) 
         step = "See that `orca status` answers, then run this again."
     if refused:
         head = head[:-1] + "." if head.endswith(":") else head
-        step = f"Its worker runs unaccepted: stop it with orca orchestration worker-stop --dispatch {dispatch_id}"
+        if not overridable(answer):
+            step = f"Its worker runs unaccepted: stop it with orca orchestration worker-stop --dispatch {dispatch_id}"
+        elif ended is not None:
+            step = f"The owner ended its hold ({str(ended)[:200]}): it holds no dispatch while Orca shows its agent exited."
+        else:
+            step = (
+                "Orca shows its agent exited, and it still holds every dispatch: tell the owner. Only on the owner's word, "
+                f"ORCHESTRATION override-hold --dispatch {dispatch_id} --reason \"<the owner's reason>\" ends that hold."
+            )
     return f"{head} {step}"
 
 
@@ -1791,7 +1855,7 @@ def status(args: argparse.Namespace) -> int:
     else:
         record = f"{recorded} (not this terminal, which is {own or 'no Orca terminal'})"
     lines = [f"status: master record: {record}"]
-    tasks = attempts()
+    tasks, ended = attempts(), hold_overrides()
     rows = [row for row in ledger_rows() if row.get("job_id")]  # the denied ones too: their workers run all the same
     for row in rows:
         if "token_usage" in row:
@@ -1805,7 +1869,7 @@ def status(args: argparse.Namespace) -> int:
         else:
             who = f"dispatch {dispatch_id}"
         answer = orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full")
-        words = step_of(dispatch_id, answer, siblings, refused)
+        words = step_of(dispatch_id, answer, siblings, refused, ended.get(dispatch_id) if refused else None)
         if words:
             lines.append(f"status: {who}{words}")
     lines.append(
@@ -1813,6 +1877,68 @@ def status(args: argparse.Namespace) -> int:
         "ORCHESTRATION report lists them."
     )
     print("\n".join(lines))
+    return 0
+
+
+def override_hold(args: argparse.Namespace) -> int:
+    """End, on the owner's word, the hold of one dispatch that the gate refused at register.
+
+    That hold ends by itself once Orca shows the dispatch settled or gone. This is for one that Orca keeps under an
+    outcome this code does not know after its worker was stopped, which would refuse every dispatch for good. It is
+    recorded only while `overridable` is true of Orca's answer, and `dispatch` asks the same of every later answer.
+    Orca is only read; one line is appended to .orchestration/hold-overrides.jsonl.
+    """
+    if missing := missing_ledger():
+        return missing
+    dispatch_id, reason = args.dispatch, " ".join(args.reason.split())  # on one line, as `status` prints it
+    if not reason:
+        return fail("--reason is empty. The override is the owner's decision: pass the owner's reason, which the record keeps")
+
+    def refuse(code: str, message: str) -> int:
+        print(json.dumps({"stage": "override-hold", "allow": False, "dispatch": dispatch_id, "reason": code}))
+        return fail(f"{message}. Nothing was recorded")
+
+    if not any(row.get("job_id") == dispatch_id and row.get("decision") != "ALLOW" for row in ledger_rows()):
+        return refuse(
+            "NOT_REFUSED",
+            f"this workspace's ledger holds no register that the gate refused for {dispatch_id}, and only such a dispatch "
+            "holds every dispatch. `ORCHESTRATION status` names the ones that do",
+        )
+    answer = orca_answer("orchestration", "worker-show", "--dispatch", dispatch_id, "--full")
+    state, outcome = dispatch_state(answer)
+    if state not in HELD:
+        return refuse("NOTHING_HELD", f"Orca shows {dispatch_id} as {state}, so it holds no dispatch")
+    if state == "open":
+        return refuse(
+            "WORKER_OPEN",
+            f"Orca shows {dispatch_id} open: its worker runs. Stop it with `orca orchestration worker-stop --dispatch "
+            f"{dispatch_id}`, and the hold ends by itself once Orca shows it settled",
+        )
+    if state == "unread":
+        said = json.dumps(answer.get("error") or answer, ensure_ascii=False)[:300] if answer else "nothing"
+        return refuse(
+            "ORCA_UNREAD",
+            f"Orca gave no usable answer about {dispatch_id} ({said}), and an answer that cannot be read ends no hold. See "
+            "that `orca status` answers, then run this again",
+        )
+    if not overridable(answer):
+        verdict = pluck(answer, "result", "projection", "liveness", "verdict")
+        return refuse(
+            "AGENT_NOT_EXITED",
+            f"Orca gives {dispatch_id} the outcome {outcome!r} and does not show its agent exited (liveness "
+            f"{verdict or 'not given'}). Stop it with `orca orchestration worker-stop --dispatch {dispatch_id}`, then run "
+            "this again",
+        )
+    record = {
+        "ts": time.time(), "job_id": dispatch_id, "reason": reason, "outcome": outcome,
+        "terminal": os.environ.get("ORCA_TERMINAL_HANDLE"),
+    }
+    with open(state_dir() / OVERRIDES, "a", encoding="utf-8", newline="\n") as file:
+        file.write(json.dumps(record) + "\n")  # ASCII: a reason no encoding takes must not leave half a line
+    print(json.dumps({
+        "stage": "override-hold", "allow": True, "dispatch": dispatch_id, "outcome": outcome, "reason": "OK",
+        "next": "dispatch again; this dispatch holds again as soon as Orca shows it open or no longer shows its agent exited",
+    }))
     return 0
 
 
@@ -1902,6 +2028,14 @@ def main(argv: list[str] | None = None) -> int:
 
     sub = commands.add_parser("status", help="say where every dispatch that report has not measured stands; only reads")
     sub.set_defaults(handler=status)
+
+    sub = commands.add_parser(
+        "override-hold",
+        help="on the owner's word, end the hold of one dispatch the gate refused at register, once Orca shows its agent exited",
+    )
+    sub.add_argument("--dispatch", required=True, help="the refused dispatch, as `status` names it")
+    sub.add_argument("--reason", required=True, help="the owner's reason; kept in .orchestration/hold-overrides.jsonl")
+    sub.set_defaults(handler=override_hold)
 
     sub = commands.add_parser("probe-model")  # internal: called by the gate during register
     sub.add_argument("agent", choices=("claude", "codex"))

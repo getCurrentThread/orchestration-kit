@@ -84,7 +84,15 @@ there, on the owner's default model. It writes nothing into the folder.
    - `TASK_ATTEMPTS_EXHAUSTED`: the task has had three attempts. Stop, and tell the owner what was tried.
    - Exit 2 at `"stage": "register"`: the worker runs but was not accepted, for example
      `MODEL_TIER_ESCALATION` (it runs on a higher tier than declared). Stop it with
-     `orca orchestration worker-stop --dispatch <id>` and tell the owner.
+     `orca orchestration worker-stop --dispatch <id>` and tell the owner. A refusal that the gate wrote into
+     the ledger (that one, and `ORCHESTRATION_UNVERIFIED`) refuses every dispatch with
+     `UNACCEPTED_WORKER_RUNNING`, and starts no worker, until Orca shows that dispatch settled or gone. A
+     refusal for another reason leaves no row and holds nothing: stop its worker all the same. If Orca keeps a
+     stopped one under an outcome the wrapper does not know, the hold stays: tell the owner. Only on the
+     owner's explicit yes for that dispatch, never on your own, run
+     `ORCHESTRATION override-hold --dispatch <id> --reason "<the owner's reason>"`. It ends that one hold, and
+     only while Orca shows the dispatch's agent exited: it refuses one that is open or that Orca cannot be
+     read about, and such a one holds again whatever was recorded.
    - `Orca reported the start as done` (exit 2, Orca's answer printed): a worker may be running that no ledger row
      holds. Find it with `orca orchestration run-current --json`, then `orca orchestration worker-list --run <run>`,
      and do not dispatch the contract again before you have.
