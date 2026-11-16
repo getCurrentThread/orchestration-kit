@@ -1255,9 +1255,10 @@ def retirement(predecessor: str, verification: str, recorded: str | None) -> str
 
     Upstream proves retirement with ps and tty probes, which do not exist on Windows. Orca's list of live
     terminals is what can be measured here. Orca is asked to close the terminal only when the verification is PASS,
-    the predecessor is the handle in `.orchestration/master` (`recorded`: what `succeed` or the last `inherit` wrote
-    there), that handle is not this terminal's own, and a whole list of Orca's terminals holds it. A second list
-    then shows whether it is gone. After PARTIAL or FAILED the predecessor holds what the handoff lost, and stays open.
+    the predecessor is the handle in `.orchestration/master` (`recorded`: what `dispatch`, `succeed` or the last
+    `inherit` wrote there), that handle is not this terminal's own, and a whole list of Orca's terminals holds it.
+    The lists asked for after the close, for up to `CLOSE_WAIT` seconds, then show whether it is gone. After PARTIAL
+    or FAILED the predecessor holds what the handoff lost, and stays open.
     """
     command = f"orca terminal close --terminal {predecessor}"
     own = os.environ.get("ORCA_TERMINAL_HANDLE")
