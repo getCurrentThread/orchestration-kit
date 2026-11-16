@@ -531,7 +531,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertNotIn("restarted", output)
         self.assertNotIn("parked", output)
         frames = [{"runtime": "one", "workers": {"ctx_test": "done"}, "parked": ["ctx_test"], "unread": 0}]
-        self.assertIn('parked on a prompt that only a human can answer: {"evidence": "prompt-text"}', self.watch(frames, "--stalled-after", "0"))
+        self.assertIn('parked on a prompt that only a human can answer: {"source": "hook", "since": 1794824861316}', self.watch(frames, "--stalled-after", "0"))
         # An outcome Orca did not have when this was written is never taken for "settled".
         frames = [{"runtime": "one", "workers": {"ctx_test": "unknown"}, "outcomes": {"ctx_test": "cancelled"}, "unread": 0}]
         output = self.watch(frames, "--stalled-after", "0")
@@ -1253,8 +1253,8 @@ class OrchestrationTest(unittest.TestCase):
         held = (
             ("live", {}, f" is open in {run}, and Orca shows its agent live.",
              f"Keep `ORCHESTRATION watch --run {run}` running; a message reaches it with: orca orchestration send --to dispatch:{{id}}"),
-            ("parked", {"FAKE_ORCA_FRAMES": str(parked)}, f' is open in {run}, parked on a prompt that only a human can answer: {{"evidence": "prompt-text"}}.',
-             "Tell the owner what it asks, and do not answer it through its terminal."),
+            ("parked", {"FAKE_ORCA_FRAMES": str(parked)}, f' is open in {run}, parked on a prompt that only a human can answer: {{"source": "hook", "since": 1794824861316}}.',
+             "Read what it asks with orca orchestration worker-read --dispatch {id}, tell the owner, and do not answer it through its terminal."),
             ("ended", {"FAKE_ORCA_LIVENESS": "unverifiable"},
              f" is open in {run}, and its agent has ended while its terminal is kept (Claude's resume line, then a shell prompt):",
              "run ORCHESTRATION resume --dispatch {id}"),
@@ -1333,6 +1333,102 @@ class OrchestrationTest(unittest.TestCase):
                 self.assertEqual((code, line["reason"], line["dispatch"], line["state"]), (2, "CONTRACT_ALREADY_RUNNING", "ctx_test", state))
                 self.assertEqual(line["outcome"], None if outcome == "no answer" else outcome)
         self.assertEqual(len(self.worker_starts()), 1)
+
+    def test_no_worker_is_started_while_one_runs_that_the_gate_refused_at_register(self):
+        os.environ["FAKE_ORCA_WORKER_MODEL"] = versioned(TOP)
+        self.assertEqual(self.dispatch()[0], 2)  # refused at register, and its worker runs all the same
+        os.environ.update({"FAKE_ORCA_WORKER_MODEL": versioned(EFFICIENT), "FAKE_ORCA_DISPATCH": "other"})
+        other = self.work / "other.md"  # another contract: the refused row names none, so it holds every one
+        other.write_text(Path(self.contract()).read_text(encoding="utf-8") + "\nAnother task.\n", encoding="utf-8")
+        again = ("dispatch", "--contract", str(other), "--agent", "claude", "--model", EFFICIENT, "--effort", "low")
+        rows = len(self.ledger())
+        for outcome, state in (("in_progress", "open"), ("paused", "unknown"), ("no answer", "unread")):
+            with self.subTest(outcome), mock.patch.dict(os.environ, {"FAKE_ORCA_OUTCOME": outcome}):
+                code, output = self.cli(*again)
+                self.assertEqual(code, 2, output)
+                line = json.loads(output.splitlines()[0])
+                self.assertEqual((line["reason"], line["dispatch"], line["state"]), ("UNACCEPTED_WORKER_RUNNING", "ctx_test", state))
+                self.assertIn("orca orchestration worker-stop --dispatch ctx_test", output)
+                # Only an open one is known to run: the others are to be looked at first.
+                self.assertIn("Orca shows it open" if state == "open" else "orca orchestration worker-show --dispatch ctx_test", output)
+                self.assertEqual((len(self.worker_starts()), len(self.ledger())), (1, rows))  # refused before the gate
+        # Stopped: `orca orchestration worker-stop` left `failed` on each of 5 scratch workers (Orca 1.4.259, 2026-11-16).
+        os.environ["FAKE_ORCA_OUTCOME"] = "failed"
+        code, output = self.cli(*again)
+        self.assertEqual((code, json.loads(output)["dispatch"]), (0, "ctx_other"), output)
+
+    def test_the_owner_ends_the_hold_of_a_refused_dispatch_only_while_orca_shows_its_agent_exited(self):
+        os.environ["FAKE_ORCA_WORKER_MODEL"] = versioned(TOP)
+        self.assertEqual(self.dispatch()[0], 2)  # ctx_test is refused at register
+        os.environ.update({"FAKE_ORCA_WORKER_MODEL": versioned(EFFICIENT), "FAKE_ORCA_DISPATCH": "other"})
+        other = self.work / "other.md"
+        other.write_text(Path(self.contract()).read_text(encoding="utf-8") + "\nAnother task.\n", encoding="utf-8")
+        again = ("dispatch", "--contract", str(other), "--agent", "claude", "--model", EFFICIENT, "--effort", "low")
+        why = "the owner: stopped by hand, and Orca calls it paused"
+        override = ("override-hold", "--dispatch", "ctx_test", "--reason", why)
+        record = self.work / ".orchestration" / "hold-overrides.jsonl"
+        stuck = {"FAKE_ORCA_OUTCOME": "paused", "FAKE_ORCA_LIVENESS": "exited"}  # stopped, under an outcome nobody knows
+        refusals = (  # what Orca shows, and why the hold is not ended for it
+            ({"FAKE_ORCA_OUTCOME": "in_progress", "FAKE_ORCA_LIVENESS": "exited"}, "WORKER_OPEN"),
+            ({"FAKE_ORCA_OUTCOME": "no answer"}, "ORCA_UNREAD"),
+            ({"FAKE_ORCA_OUTCOME": "other refusal"}, "ORCA_UNREAD"),
+            ({"FAKE_ORCA_OUTCOME": "paused", "FAKE_ORCA_LIVENESS": "live"}, "AGENT_NOT_EXITED"),
+            ({"FAKE_ORCA_OUTCOME": "paused", "FAKE_ORCA_LIVENESS": "unverifiable"}, "AGENT_NOT_EXITED"),
+            ({"FAKE_ORCA_OUTCOME": "failed"}, "NOTHING_HELD"),
+            ({"FAKE_ORCA_OUTCOME": "unknown dispatch"}, "NOTHING_HELD"),
+        )
+        for environment, reason in refusals:
+            with self.subTest(reason, **environment), mock.patch.dict(os.environ, environment):
+                code, output = self.cli(*override)
+                self.assertEqual((code, json.loads(output.splitlines()[0])["reason"]), (2, reason), output)
+                self.assertFalse(record.exists())
+        with mock.patch.dict(os.environ, stuck):
+            calls = len(self.orca_calls())
+            code, output = self.cli("override-hold", "--dispatch", "ctx_nobody", "--reason", why)  # no refused row names it
+            self.assertEqual((code, json.loads(output.splitlines()[0])["reason"], len(self.orca_calls())), (2, "NOT_REFUSED", calls), output)
+            self.assertEqual(self.cli("override-hold", "--dispatch", "ctx_test", "--reason", " ")[0], 2)  # no reason given
+            self.assertFalse(record.exists())
+            record.write_text(json.dumps({"job_id": "ctx_test"}) + "\n", encoding="utf-8")  # by hand, without a reason: none
+            code, output = self.cli(*again)
+            self.assertEqual((code, json.loads(output.splitlines()[0])["reason"]), (2, "UNACCEPTED_WORKER_RUNNING"), output)
+            self.assertIn('tell the owner. Only on the owner\'s word, ORCHESTRATION override-hold --dispatch ctx_test --reason "<the owner\'s reason>" ends that hold.', self.cli("status")[1])
+            record.unlink()
+            code, output = self.cli("override-hold", "--dispatch", "ctx_test", "--reason", why.replace(", ", ",\n\t"))
+            self.assertEqual((code, json.loads(output)["allow"]), (0, True), output)
+            kept = json.loads(record.read_text(encoding="utf-8"))  # one record, with the reason on one line
+            self.assertEqual((kept["job_id"], kept["reason"], kept["outcome"], kept["terminal"]), ("ctx_test", why, "paused", "term_test"))
+            self.assertIn(f"The owner ended its hold ({why}): it holds no dispatch while Orca shows its agent exited.", self.cli("status")[1])
+        # The record passes a dispatch only while Orca shows that again: never an open one, an unread one or a live agent.
+        still = (
+            ({"FAKE_ORCA_OUTCOME": "in_progress", "FAKE_ORCA_LIVENESS": "exited"}, "open"),
+            ({"FAKE_ORCA_OUTCOME": "no answer"}, "unread"),
+            ({"FAKE_ORCA_OUTCOME": "paused", "FAKE_ORCA_LIVENESS": "live"}, "unknown"),
+        )
+        for environment, state in still:
+            with self.subTest(state, **environment), mock.patch.dict(os.environ, environment):
+                code, output = self.cli(*again)
+                line = json.loads(output.splitlines()[0])
+                self.assertEqual((code, line["reason"], line["dispatch"], line["state"]), (2, "UNACCEPTED_WORKER_RUNNING", "ctx_test", state))
+                self.assertIn("Its worker runs unaccepted: stop it with orca orchestration worker-stop --dispatch ctx_test", self.cli("status")[1])
+        self.assertEqual(len(self.worker_starts()), 1)
+        with mock.patch.dict(os.environ, stuck):
+            code, output = self.cli(*again)
+            self.assertEqual((code, json.loads(output)["dispatch"]), (0, "ctx_other"), output)
+            # It ends the hold of a refused dispatch and no other: a registered one keeps its contract, whatever the file says.
+            code, output = self.cli("override-hold", "--dispatch", "ctx_other", "--reason", why)
+            self.assertEqual((code, json.loads(output.splitlines()[0])["reason"]), (2, "NOT_REFUSED"), output)
+            with record.open("a", encoding="utf-8") as forged:
+                forged.write(json.dumps({"job_id": "ctx_other", "reason": "written by hand"}) + "\n")
+            code, output = self.cli(*again)
+            self.assertEqual((code, json.loads(output.splitlines()[0])["reason"]), (2, "CONTRACT_ALREADY_RUNNING"), output)
+        self.assertEqual(len(self.worker_starts()), 2)
+
+    def test_a_dispatch_refused_before_the_gate_leaves_no_state_folder_behind(self):
+        project = self.ready("ready")
+        code, output = self.cli("dispatch", "--contract", "no-such.md", "--agent", "claude", "--model", EFFICIENT, "--effort", "low", "--project", str(project))
+        self.assertEqual(code, 2, output)
+        self.assertIn("no contract at", output)
+        self.assertFalse((self.work / ".orchestration").exists())  # the look for a refused worker reads a ledger, and makes none
 
     def test_a_worker_row_without_a_terminal_handle_is_not_ended_and_orca_is_not_asked(self):
         calls = len(self.orca_calls())
