@@ -12,8 +12,19 @@ prompt end the tail) and of a released terminal (status exited, empty tail); `te
 closed terminal, ok false with error.code terminal_not_writable; `terminal wait --for tui-idle` (`result.wait.satisfied`) and, on
 timeout, ok false with error.code timeout; `orchestration send --to dispatch:<id>` (`result.messageId`).
 
+Measured on 1.4.259 on 2026-11-16, for `inherit`: `terminal close --terminal <handle> --json` of a terminal that holds an idle
+Claude session (exit 0, `result.close` {handle, tabId, ptyKilled: true}; the handle is gone from the next `terminal list`), and of a
+handle Orca does not know (exit 1, ok false, error.code terminal_handle_stale). The fake answers the first for a handle it lists,
+the second for any other, and leaves a closed handle out of every later `terminal list` of the test.
+
 Switches that were NOT measured against Orca. Each makes the fake answer in a way a test needs and stands for a doubt the
 wrapper must survive, not for an answer Orca was seen to give:
+  FAKE_ORCA_CLOSE=stale              `terminal close` of a listed handle answers terminal_handle_stale, as Orca did for an unknown
+                                     one (measured): stands for a terminal that was gone between the list and the close.
+  FAKE_ORCA_CLOSE=not carried out    `terminal close` answers ok as measured and closes nothing, the handle stays listed: stands
+                                     for a close that Orca accepts and does not carry out. Not measured.
+  FAKE_ORCA_CLOSE=odd answer         `terminal close` exits 0 with ok true and a result without `close`: stands for a shape this
+                                     wrapper does not read. Not measured.
   FAKE_ORCA_START=exit 1             `worker-start` prints an ok-false answer and exits 1 before it starts anything: stands for
                                      any refusal, with no worker.
   FAKE_ORCA_START=no dispatchId      `worker-start` exits 0 with a receipt that lacks `dispatchId`, the worker started: stands for
@@ -231,8 +242,23 @@ elif command == "terminal wait":
 elif command == "orchestration send":
     result = {"messageId": "msg_test"}
 elif command == "terminal list":
-    handles = os.environ.get("FAKE_ORCA_TERMINALS", "term_new").split(",")
+    closed = Path(os.environ["FAKE_ORCA_LOG"] + ".closed")
+    gone = closed.read_text(encoding="utf-8").split() if closed.exists() else []
+    handles = [handle for handle in os.environ.get("FAKE_ORCA_TERMINALS", "term_new").split(",") if handle not in gone]
     result = {"terminals": [{"handle": handle} for handle in handles], "totalCount": len(handles), "truncated": False}
+elif command == "terminal close":
+    handle = option("--terminal")
+    closed = Path(os.environ["FAKE_ORCA_LOG"] + ".closed")
+    gone = closed.read_text(encoding="utf-8").split() if closed.exists() else []
+    if handle not in os.environ.get("FAKE_ORCA_TERMINALS", "term_new").split(",") or handle in gone or os.environ.get("FAKE_ORCA_CLOSE") == "stale":
+        error = {"code": "terminal_handle_stale", "message": "terminal_handle_stale", "data": {"nextSteps": ["List the terminals again."]}}
+        print(json.dumps({"id": str(uuid.uuid4()), "ok": False, "error": error, "_meta": {"runtimeId": str(uuid.uuid4())}}))
+        sys.exit(1)
+    if os.environ.get("FAKE_ORCA_CLOSE") != "not carried out":
+        closed.write_text(" ".join(gone + [handle]), encoding="utf-8")
+    result = {"close": {"handle": handle, "tabId": str(uuid.uuid4()), "ptyKilled": True}}
+    if os.environ.get("FAKE_ORCA_CLOSE") == "odd answer":
+        result = {}
 elif arguments[0] == "status":
     runtime = frame()["runtime"]
     if frame().get("stale"):  # no app runs, and Orca's CLI still tries to connect: found so once, the cause not looked into

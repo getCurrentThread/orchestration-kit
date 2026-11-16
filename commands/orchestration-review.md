@@ -163,6 +163,9 @@ names, holds it whole under `result`. Read the `contract` rows from there.
   the diff), and that the verdict is therefore not a clean approval. Run the
   review again; for a long diff, review it in parts.
 
+Delete `<DIFF>` once the workflow has returned a result whose `incomplete` is false.
+Keep it while a review is incomplete or the Workflow tool has failed, because the rerun reads it.
+
 ## Fail-Closed Contract
 
 This command must never present a clean APPROVE when the review could not fully

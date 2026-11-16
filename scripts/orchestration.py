@@ -5,8 +5,9 @@ Run from the workspace root as `python -X utf8 -s -B orchestration.py <command>`
   dispatch  check a contract with the vendored dispatch gate, start one Orca worker, register it
   watch     wait for a Run's workers; return when the master must act and Orca has not woken it
   start     from a terminal outside Orca: start a fresh master in Orca on this checkout, with what the owner said
-  succeed   validate a handoff document and launch a successor master in Orca
-  inherit   append the succession to the lineage ledger (run by the successor)
+  succeed   validate a handoff document, record this terminal as the workspace's master, launch a successor master in Orca
+  inherit   append the succession to the lineage ledger, and after a PASS close the predecessor's terminal in Orca
+            (run by the successor)
   report    settle the token usage of finished dispatches, then summarise the dispatch ledger: models, denials, tiers,
             overrides, token budgets and usage
   resume    bring back the Claude session of a worker whose agent ended without a report, in its own terminal and
@@ -1193,6 +1194,9 @@ def succeed(args: argparse.Namespace) -> int:
     )
     if not workspace_known():
         return 2
+    if own:
+        # The successor's `inherit` closes only the terminal that this record and the kickoff both name.
+        (state_dir() / "master").write_text(own, encoding="utf-8")
     chosen = ["--model", launch_model("claude", args.model), "--effort", args.effort] if args.model else []
     launch = run([
         orca(), "agent", "launch", "--agent", "claude", *chosen,
@@ -1205,30 +1209,84 @@ def succeed(args: argparse.Namespace) -> int:
         return fail(str(refusal))
     step = (
         "stop your watch, the background task: the Run's mail is the successor's from now on. Tell the owner that the "
-        f"successor now runs in Orca, in terminal {terminal}. Then stop working"
+        f"successor now runs in Orca, in terminal {terminal}, and that your terminal closes once the successor has "
+        "recorded the succession with PASS. Then stop working"
     )
     print(json.dumps({"stage": "succeed", "allow": True, "terminal": terminal, "next": step}, ensure_ascii=False))
     return 0
 
 
-def retirement(predecessor: str) -> str:
-    """Say whether the predecessor's terminal is still open in Orca: two masters on one Run both take its mail.
-
-    Upstream proves retirement with ps and tty probes, which do not exist on Windows. Orca's list of live
-    terminals is what can be measured here, and closing the terminal stays the owner's decision.
-    """
+def live_terminals() -> set[str | None] | None:
+    """Return the handles of Orca's live terminals, or None unless Orca gave a whole list."""
     try:
         answer = orca_answer("terminal", "list")
     except OrcaMissing:
         answer = {}
     terminals = listed(answer, "terminals")
     if not isinstance(terminals, list) or answer["result"].get("truncated"):
-        return "not verified (Orca gave no full list of its terminals)"
-    handles = {terminal.get("handle") for terminal in terminals}
-    if predecessor in handles:
-        return f"not verified (terminal {predecessor} is still open)"
-    # Absence proves something only if the list is read rightly, and this terminal's own handle in it shows that.
+        return None
+    return {terminal.get("handle") for terminal in terminals}
+
+
+def close_terminal(handle: str) -> str | None:
+    """Ask Orca to close a terminal. Return None if it answered as measured on 1.4.259, else what it said."""
+    try:
+        done = run([orca(), "terminal", "close", "--terminal", handle, "--json"], timeout=90)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"no answer ({type(error).__name__})"
+    try:
+        answer = json.loads(done.stdout)
+    except ValueError:
+        answer = None
+    if not isinstance(answer, dict):
+        return f"exit {done.returncode}, and its answer is not JSON: {(done.stdout or done.stderr).strip()[-200:]!r}"
+    result = answer.get("result")
+    closed = result.get("close") if isinstance(result, dict) else None
+    if done.returncode == 0 and answer.get("ok") is True and isinstance(closed, dict) and closed.get("handle") == handle:
+        return None
+    error = answer.get("error")
+    said = error.get("code") if isinstance(error, dict) else error
+    return str(said or f"an answer not in the shape measured (exit {done.returncode})")[:200]
+
+
+def retirement(predecessor: str, verification: str, recorded: str | None) -> str:
+    """Retire the predecessor's terminal after a PASS, and say what was found: two masters on one Run both take its mail.
+
+    Upstream proves retirement with ps and tty probes, which do not exist on Windows. Orca's list of live
+    terminals is what can be measured here. Orca is asked to close the terminal only when the verification is PASS,
+    the predecessor is the handle in `.orchestration/master` (`recorded`: what `succeed` or the last `inherit` wrote
+    there), that handle is not this terminal's own, and a whole list of Orca's terminals holds it. A second list
+    then shows whether it is gone. After PARTIAL or FAILED the predecessor holds what the handoff lost, and stays open.
+    """
+    command = f"orca terminal close --terminal {predecessor}"
     own = os.environ.get("ORCA_TERMINAL_HANDLE")
+    handles = live_terminals()
+    if handles is None:
+        return "not verified (Orca gave no full list of its terminals)"
+    if predecessor in handles:
+        if verification != "PASS":
+            return (
+                f"kept open (verification {verification}: the predecessor holds what the handoff lost; once that is "
+                f"supplied, close terminal {predecessor} with `{command}`)"
+            )
+        if predecessor == own:
+            return f"not verified (nothing was closed: terminal {predecessor} is this terminal's own)"
+        if recorded != predecessor:
+            held = "another handle" if recorded else "no handle"
+            return (
+                f"not verified (nothing was closed: .orchestration/master held {held}, so the workspace's own record "
+                f"does not name terminal {predecessor}; if it is the predecessor, close it with `{command}`)"
+            )
+        refused = close_terminal(predecessor)
+        if refused:
+            return f"not verified (Orca did not close terminal {predecessor}: {refused}; close it with `{command}`)"
+        after = live_terminals()
+        if after is None:
+            return f"not verified (Orca said it closed terminal {predecessor}, but its second list of terminals is not whole)"
+        if predecessor in after:
+            return f"not verified (Orca said it closed terminal {predecessor}, and it is still among Orca's live terminals)"
+        return f"terminal {predecessor} closed by its successor, and is no longer among Orca's live terminals"
+    # Absence proves something only if the list is read rightly, and this terminal's own handle in it shows that.
     if own not in handles:
         return "not verified (Orca's list of terminals does not show this terminal either)"
     if predecessor.split("_")[0] != own.split("_")[0]:
@@ -1239,10 +1297,13 @@ def retirement(predecessor: str) -> str:
 
 def inherit(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(VENDOR / "src"))
-    from master_runtime.core.lineage import LineageValidationError, append_entry
+    # shortcut: _validate_entry is the vendored module's private check; the lineage has no public validate-only call.
+    from master_runtime.core.lineage import LineageValidationError, _validate_entry, append_entry
 
     ledger = state_dir() / "lineage.md"
     existing = ledger.read_text(encoding="utf-8") if ledger.exists() else ""
+    master = state_dir() / "master"
+    recorded = master.read_text(encoding="utf-8").strip() if master.exists() else None  # read before it is written below
     entry: dict[str, object] = {name: getattr(args, name) for name in LINEAGE_TEXT_FIELDS}
     entry.update(
         generation=len(re.findall(r"^## Gen ", existing, flags=re.MULTILINE)) + 1,
@@ -1251,14 +1312,16 @@ def inherit(args: argparse.Namespace) -> int:
         verification=args.verification,
         repeated_question_count=args.repeated_question_count,
         reopened_decision_count=args.reopened_decision_count,
-        predecessor_retirement_verified=retirement(args.parent_session),
+        predecessor_retirement_verified="",
     )
     try:
+        _validate_entry(entry)  # an entry the lineage refuses closes nothing
+        entry["predecessor_retirement_verified"] = retirement(args.parent_session, args.verification, recorded)
         append_entry(ledger, entry)
     except LineageValidationError as error:
         return fail(str(error))
     if os.environ.get("ORCA_TERMINAL_HANDLE"):
-        (state_dir() / "master").write_text(os.environ["ORCA_TERMINAL_HANDLE"], encoding="utf-8")
+        master.write_text(os.environ["ORCA_TERMINAL_HANDLE"], encoding="utf-8")
     print(f"lineage: recorded generation {entry['generation']} in {ledger}")
     print(f"lineage: predecessor retirement: {entry['predecessor_retirement_verified']}")
     return 0
@@ -1646,7 +1709,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument("--run", help="Orca Run id the successor should take over")
     sub.set_defaults(handler=succeed)
 
-    sub = commands.add_parser("inherit", help="record the succession in .orchestration/lineage.md")
+    sub = commands.add_parser(
+        "inherit", help="record the succession in .orchestration/lineage.md, and after a PASS close the predecessor's terminal",
+        description="Record the succession in .orchestration/lineage.md. With --verification PASS, and --parent-session the "
+        "terminal that .orchestration/master names (written by `succeed`), not this terminal's own and among Orca's live "
+        "terminals, it closes that terminal with `orca terminal close` and records in the lineage whether Orca no longer "
+        "lists it. After PARTIAL or FAILED the predecessor stays open. An entry the lineage refuses exits 2 and closes nothing.",
+    )
     sub.add_argument("--handoff", required=True)
     sub.add_argument("--verification", required=True, choices=("PASS", "PARTIAL", "FAILED"))
     for name in LINEAGE_TEXT_FIELDS:

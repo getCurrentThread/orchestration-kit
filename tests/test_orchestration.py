@@ -896,8 +896,94 @@ class OrchestrationTest(unittest.TestCase):
         # without this session's own terminal proves nothing by what it lacks.
         self.assertIn("not verified (Orca's list of terminals does not show this terminal either)", generations[1])
         self.assertIn("terminal term_old is not among Orca's live terminals", generations[2])
-        self.assertIn("not verified (terminal term_old is still open)", generations[3])
+        self.assertIn("not verified (nothing was closed: .orchestration/master held another handle", generations[3])
         self.assertEqual((self.work / ".orchestration" / "master").read_text(encoding="utf-8"), "term_test")
+
+    def succession(self, recorded="term_old", verification="PASS", count="0", parent="term_old", **environment):
+        """Run `inherit` as the successor term_test, with the predecessor term_old among Orca's terminals and `recorded` in the file.
+
+        Return the exit code, the Orca calls to `terminal close`, and the newest lineage entry.
+        """
+        for leftover in (self.log, Path(str(self.log) + ".closed")):
+            leftover.unlink(missing_ok=True)
+        master = self.work / ".orchestration" / "master"
+        master.parent.mkdir(exist_ok=True)
+        master.unlink(missing_ok=True)
+        if recorded:
+            master.write_text(recorded, encoding="utf-8")
+        handoff = self.work / "handoff.md"
+        handoff.write_text("handoff", encoding="utf-8")
+        arguments = [{"PASS": verification, "term_old": parent}.get(argument, argument) for argument in LINEAGE_ARGUMENTS]
+        with mock.patch.dict(os.environ, {"FAKE_ORCA_TERMINALS": "term_old,term_test", **environment}):
+            code, output = self.cli("inherit", "--handoff", str(handoff), *arguments, "--repeated-question-count", count)
+        closes = [call for call in self.orca_calls() if call[:2] == ["terminal", "close"]]
+        ledger = self.work / ".orchestration" / "lineage.md"
+        entry = ledger.read_text(encoding="utf-8").split("## Gen ")[-1] if ledger.exists() else ""
+        return code, closes, entry
+
+    def test_inherit_closes_the_recorded_predecessor_after_a_pass_and_proves_it_gone(self):
+        code, closes, entry = self.succession()
+        self.assertEqual((code, closes), (0, [["terminal", "close", "--terminal", "term_old", "--json"]]))
+        self.assertIn("terminal term_old closed by its successor", entry)
+        self.assertIn("no longer among Orca's live terminals", entry)
+        self.assertEqual(sum(call[:2] == ["terminal", "list"] for call in self.orca_calls()), 2)  # before the close, and after it
+        self.assertEqual((self.work / ".orchestration" / "master").read_text(encoding="utf-8"), "term_test")
+
+    def test_inherit_keeps_the_predecessor_open_after_partial_or_failed(self):
+        for verification in ("PARTIAL", "FAILED"):
+            with self.subTest(verification=verification):
+                code, closes, entry = self.succession(verification=verification)
+                self.assertEqual((code, closes), (0, []))
+                self.assertIn(f"kept open (verification {verification}", entry)
+                self.assertIn("orca terminal close --terminal term_old", entry)
+
+    def test_inherit_closes_nothing_after_a_pass_unless_the_workspace_record_names_the_predecessor(self):
+        for recorded in ("term_other", None):  # another handle, and no file
+            with self.subTest(recorded=recorded):
+                code, closes, entry = self.succession(recorded=recorded)
+                self.assertEqual((code, closes), (0, []))
+                self.assertIn("not verified (nothing was closed", entry)
+                self.assertIn("orca terminal close --terminal term_old", entry)
+        with self.subTest(recorded="this terminal's own"):  # the predecessor is this very terminal
+            code, closes, entry = self.succession(recorded="term_test", parent="term_test", FAKE_ORCA_TERMINALS="term_test")
+            self.assertEqual((code, closes), (0, []))
+            self.assertIn("not verified (nothing was closed", entry)
+
+    def test_inherit_records_what_it_found_when_orca_does_not_close_the_terminal(self):
+        for switch, said in (
+            ("stale", "not verified (Orca did not close terminal term_old: terminal_handle_stale"),
+            ("odd answer", "not verified (Orca did not close terminal term_old: an answer not in the shape measured"),
+            ("not carried out", "not verified (Orca said it closed terminal term_old, and it is still among Orca's live terminals"),
+        ):
+            with self.subTest(switch=switch):
+                code, closes, entry = self.succession(FAKE_ORCA_CLOSE=switch)
+                self.assertEqual((code, len(closes)), (0, 1))
+                self.assertIn(said, entry)
+                self.assertEqual((self.work / ".orchestration" / "master").read_text(encoding="utf-8"), "term_test")
+
+    def test_inherit_closes_nothing_for_an_entry_the_lineage_refuses(self):
+        _, closes, before = self.succession()
+        self.assertEqual(len(closes), 1)  # the same run, with an entry the lineage takes, closes
+        code, closes, entry = self.succession(count="-1")
+        self.assertEqual((code, closes, entry), (2, [], before))  # and no entry was added
+        self.assertEqual((self.work / ".orchestration" / "master").read_text(encoding="utf-8"), "term_old")
+
+    def test_succeed_records_this_terminal_as_the_master_only_in_an_orca_terminal(self):
+        handoff = self.work / "handoff.md"
+        master = self.work / ".orchestration" / "master"
+        handoff.write_text("## Role State\n", encoding="utf-8")  # refused: the successor is not launched, and nothing is recorded
+        self.assertEqual(self.cli("succeed", "--handoff", str(handoff))[0], 2)
+        self.assertFalse(master.exists())
+        state = "## Role State\n\nCurrent Role: Maintenance\n\n"
+        handoff.write_text(state + "".join(f"## {heading}\n\nwhat this session knows\n\n" for heading in orchestration.HANDOFF_HEADINGS[1:]), encoding="utf-8")
+        code, output = self.cli("succeed", "--handoff", str(handoff))
+        self.assertEqual(code, 0, output)
+        self.assertEqual(master.read_text(encoding="utf-8"), "term_test")
+        self.assertIn("your terminal closes once the successor has recorded the succession with PASS", json.loads(output)["next"])
+        master.unlink()
+        del os.environ["ORCA_TERMINAL_HANDLE"]
+        self.assertEqual(self.cli("succeed", "--handoff", str(handoff))[0], 0)
+        self.assertFalse(master.exists())
 
     def git(self, folder, *command, ends=0):
         identity = ["-c", "user.name=tester", "-c", "user.email=tester@example.invalid", "-c", "commit.gpgsign=false"]
