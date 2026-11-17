@@ -74,6 +74,10 @@ there, on the owner's default model. It writes nothing into the folder.
    than five minutes at a time, such as one that waits for your answers. The line's `cache_ttl` says which it
    got, and no other session is changed by it. Where Claude asks whether it may trust a folder that is new to
    it, such as a project directory, the wrapper answers yes, as Orca does for a worker it starts itself.
+
+   A Claude worker's `Write`, `Edit` and `NotebookEdit` refuse a path outside the folder it runs in, and any
+   `.claude/settings.json`. Its own scratchpad stays writable, and shell commands are not limited. A contract
+   that needs such a write names it and the shell command that makes it.
 3. Read the JSON lines it prints. A refusal (exit 2) ends with an `orchestration: ...` line that says what
    to do:
    - Exit 0, `"stage": "register"`: the worker runs and is recorded. `dispatch` and `run` are the ids the
