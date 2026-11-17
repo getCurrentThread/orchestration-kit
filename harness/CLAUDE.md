@@ -1,8 +1,8 @@
 # Project Instructions: {{product-name}}
 
 > This file is a **router**. It points to where to read, not the content itself. Keep it under 100 lines.
-> Claude Code reads `CLAUDE.md`, Codex reads `AGENTS.md`. Cursor uses `.cursor/rules/agentic-router.mdc` as its project rule adapter.
-> `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, and `.windsurfrules` share identical content.
+> Claude Code reads `CLAUDE.md`, Codex reads `AGENTS.md`.
+> `CLAUDE.md` and `AGENTS.md` share identical content.
 
 ## Always read before answering
 

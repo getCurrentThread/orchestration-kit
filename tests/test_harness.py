@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import harness  # noqa: E402
 
 FILES = harness.sources()
-ROUTERS = ("CLAUDE.md", "AGENTS.md", ".cursorrules", ".windsurfrules")
+ROUTERS = ("CLAUDE.md", "AGENTS.md")
 
 
 def tree(folder):
@@ -181,7 +181,7 @@ class HarnessTest(unittest.TestCase):
             self.git(*command)
         before = tree(self.target)
         changed = harness.fill(self.target)
-        self.assertEqual(changed, [".agent/Context.md", ".agent/Instructions.md", ".cursorrules", ".windsurfrules", "AGENTS.md", "CLAUDE.md", "CLAUDE.md.starter"])
+        self.assertEqual(changed, [".agent/Context.md", ".agent/Instructions.md", "AGENTS.md", "CLAUDE.md", "CLAUDE.md.starter"])
         after = tree(self.target)
         self.assertEqual({name for name in after if after[name] != before[name]}, set(changed))
         self.assertEqual([name for name in changed if b"{{" in after[name]], [".agent/Context.md"])

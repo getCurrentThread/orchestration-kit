@@ -393,7 +393,7 @@ STALE_PATTERNS=(
 )
 active_targets=(
   README.md
-  CLAUDE.md AGENTS.md .cursorrules .windsurfrules .cursor
+  CLAUDE.md AGENTS.md
   .agent
   docs/wiki/guides
   docs/wiki/index.md

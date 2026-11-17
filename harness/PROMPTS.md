@@ -22,12 +22,12 @@ Apply mogui-agent-harness to this repo. (My project: {{product-name}}, {{one-lin
 
 First read the current host router, then read `.agent/Instructions.md`, `.agent/Context.md`, `.agent/Memory.md` directly. Then replace the `{{...}}` placeholders and `YYYY-MM-DD` based on this company project.
 
-The four routers (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.windsurfrules`) must stay byte-identical. Fill the placeholders in one of them, then copy the result over the other three so all four match. `verify-agent-ssot.sh` fails on router drift.
+The two routers (`CLAUDE.md`, `AGENTS.md`) must stay byte-identical. Fill the placeholders in one of them, then copy the result over the other. `verify-agent-ssot.sh` fails on router drift.
 
 Replace `@git_author` based on `git config user.name`. Also state that postmortem filenames and frontmatter authors follow the git author or the team's handle policy, not a hardcoded personal name.
 
 Detect this project's primary working language from how I write to you, and ask me if it is unclear. Then configure the language-specific hooks:
-- If the project language is NOT Korean: delete `.agent/korean-persona.md` and drop the "Optional: Korean-language projects" section from the four routers. For prose quality instead, if a de-slop skill such as `stop-slop` (github.com/hardikpandya/stop-slop) is installed on this host, use it when writing docs; otherwise keep prose plain and avoid em dashes.
+- If the project language is NOT Korean: delete `.agent/korean-persona.md` and drop the "Optional: Korean-language projects" section from the two routers. For prose quality instead, if a de-slop skill such as `stop-slop` (github.com/hardikpandya/stop-slop) is installed on this host, use it when writing docs; otherwise keep prose plain and avoid em dashes.
 - If the project language IS Korean: keep `.agent/korean-persona.md`. If I want Korean guides, mirror `docs/wiki/guides/` into `docs/wiki/guides/ko/`.
 - Keep `no-emoji-check` either way. It is language-agnostic.
 
@@ -51,7 +51,7 @@ Finish ingesting the mogui-agent-harness structure into this existing project. I
 
 Order:
 1. List every `*.starter` file with how it differs from the file beside it, and report the differences to me. I decide whether to merge each one. Delete each `*.starter` file once it is merged or dropped.
-2. For the router, if a `CLAUDE.md` already exists, merge only the starter's "always read before answering" section into it, and sync your router to `AGENTS.md`/`.cursorrules`/`.windsurfrules`.
+2. For the router, if a `CLAUDE.md` already exists, merge only the starter's "always read before answering" section into it, and sync your router to `AGENTS.md`.
 3. Propose a classification of the existing scattered docs into layers (I confirm): behavior rules and preferences → `.agent/`, work in progress → `.planning/`, closed decisions, guides, and retrospectives → `docs/wiki/`. Show me a mapping table before moving any originals.
 4. Fill `.agent/Context.md` and `.agent/Memory.md` as drafts by reading from the existing README and notes, but leave anything uncertain as `{{...}}` and ask me.
 5. If decisions have already been made informally, present two options: back-fill them as ADRs (named `D-YYYYMMDD-<author>-<slug>`), or stack only new decisions as ADRs and keep old ones as references. I choose.
@@ -69,7 +69,7 @@ I'm a new collaborator who just cloned this repo for the first time. Help me wit
 
 (a) My onboarding:
 1. Read the host router (`CLAUDE.md` etc.) and `.agent/Instructions.md`, `.agent/Context.md`, `.agent/Memory.md`, then summarize how this team works in three lines.
-2. Give me an environment setup checklist: set `git config user.name`/`user.email`, run `bash scripts/setup.sh`, (if Codex) copy `.codex/*.example` locally, (if Cursor) confirm the three `.agent` files were read in a new chat.
+2. Give me an environment setup checklist: set `git config user.name`/`user.email`, run `bash scripts/setup.sh`, (if Codex) copy `.codex/*.example` locally.
 3. From `docs/wiki/decisions/` and `docs/wiki/guides/`, pick the three core "why we do it this way" decisions I should read first.
 
 (b) Add me as a member:
@@ -96,8 +96,6 @@ Answer using only the files in this repo (no outside knowledge).
 |---|---|---|
 | Claude Code | `CLAUDE.md` | If a `.claude/settings.json` hook exists, SessionStart/PreToolUse/PostToolUse can run. `.mcp.json` starts the code-review-graph MCP server. |
 | Codex | `AGENTS.md` | `.codex/hooks.json` and `.codex/config.toml` are local files. Copy them from the examples. |
-| Cursor | `.cursor/rules/agentic-router.mdc` | `.cursorrules` is the legacy fallback. Confirm the three `.agent` files were read in a new chat. |
-| Windsurf | `.windsurfrules` | Only the router is provided by default. |
 
 ## Operations check prompt
 
@@ -105,8 +103,7 @@ Answer using only the files in this repo (no outside knowledge).
 Check the mogui-agent-harness wiring.
 
 What to verify:
-- whether the 4 routers have the same content
-- whether the Cursor project rule `.cursor/rules/agentic-router.mdc` and `.cursor/mcp.json` exist
+- whether the 2 routers have the same content
 - whether `.agent/Instructions.md`, `.agent/Context.md`, `.agent/Memory.md` were replaced with the current project info
 - whether `.codex/hooks.example.json` references only `.codex/hooks/*.sh` files that actually exist
 - whether the `.planning/` and `docs/wiki/` skeletons are preserved with `.gitkeep`

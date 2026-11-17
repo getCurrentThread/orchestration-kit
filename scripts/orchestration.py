@@ -196,6 +196,75 @@ def contract_title(contract: str) -> str:
     return Path(contract).stem
 
 
+def contract_writes(contract: Path) -> list[str] | None:
+    """Return the `writes` of a contract's front matter, or None where it names none. The gate takes the list
+    on one line, `[a, b]`, and has checked its form before any worker started."""
+    lines = contract.read_text(encoding="utf-8", errors="replace").splitlines()
+    for line in lines[1:] if lines and lines[0].strip() == "---" else []:
+        if line.strip() == "---":
+            break
+        if found := re.fullmatch(r"writes:\s*\[(.*)\]\s*", line):
+            return [entry.strip() for entry in found[1].split(",") if entry.strip()]
+    return None
+
+
+def diff_paths(diff: Path) -> tuple[list[str], list[str]]:
+    """Return the paths a unified diff of git changes, and every header that names no path this code can read.
+
+    A header reads `diff --git a/<path> b/<path>`; where the two differ, the rename or copy lines after it name
+    them, and a rename changes the old path as well. Git quotes a path that is not plain ASCII, with octal escapes.
+    """
+    def plain(path: str) -> str:
+        if len(path) > 1 and path[0] == path[-1] == '"':
+            return path[1:-1].encode("ascii", "replace").decode("unicode_escape").encode("latin-1").decode("utf-8", "replace")
+        return path
+
+    changed, unread, open_header = [], [], None
+    for line in diff.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("diff --git "):
+            if open_header:
+                unread.append(open_header)
+            same = re.fullmatch(r'("?)a/(.*)\1 \1b/\2\1', line[len("diff --git "):])
+            open_header = None if same else line
+            if same:
+                changed.append(plain(f"{same[1]}{same[2]}{same[1]}"))
+        elif open_header and (named := re.fullmatch(r"(rename from|rename to|copy to) (.+)", line)):
+            changed.append(plain(named[2]))
+            if named[1].endswith(" to"):
+                open_header = None
+    return changed, unread + ([open_header] if open_header else [])
+
+
+def scope(args: argparse.Namespace) -> int:
+    """Internal, for the review command: name the files of a diff that the contract's `writes` does not cover.
+
+    A reviewer reads `writes` too, as a judgment. This is the same comparison by rule: an entry covers the file
+    it names and everything under the folder it names.
+    """
+    try:
+        writes = contract_writes(Path(args.contract))
+        changed, unread = diff_paths(Path(args.diff))
+    except OSError as error:
+        return fail(f"the contract or the diff cannot be read, so nothing was compared with `writes`: {error}")
+    covers = [entry.replace("\\", "/").removeprefix("./").rstrip("/") for entry in writes or []]
+    outside = sorted({path for path in changed if not any(path == entry or path.startswith(entry + "/") for entry in covers)})
+    # Without `writes` the contract limits nothing by rule, and nothing is outside.
+    line = {"stage": "scope", "writes": writes, "changed": len(set(changed)), "outside": outside if writes is not None else []}
+    print(json.dumps(line, ensure_ascii=False))
+    if unread:
+        return fail(
+            f"{len(unread)} header(s) of the diff name no path this wrapper can read, so the comparison with `writes` is "
+            f"not complete: {'; '.join(unread)}. Compare those files with the contract's `writes` by hand"
+        )
+    if line["outside"]:
+        return fail(
+            f"{len(outside)} changed file(s) are outside the contract's `writes`: {', '.join(outside)}. This blocks the "
+            "result, whatever the reviewers say: a worker that edits beyond its contract is sent a fix contract, or the "
+            "owner widens `writes`"
+        )
+    return 0
+
+
 def ledger_rows(name: str = "dispatch-ledger.jsonl") -> list[dict]:
     """Return the rows of this workspace's dispatch ledger, or of another JSON-lines file of its state folder. A line
     that is not a JSON object is left out."""
@@ -403,7 +472,7 @@ def set_up_harness(target: Path, attention: list[str]) -> str:
         attention.append(
             f"Double braces that are no placeholder of this harness are still in: {', '.join(unfilled)}. The router "
             "there tells a worker's first session to stop and ask about them: fill them from what the repository and "
-            "the owner's request show, or ask the owner. CLAUDE.md, AGENTS.md, .cursorrules and .windsurfrules stay identical."
+            "the owner's request show, or ask the owner. CLAUDE.md and AGENTS.md stay identical."
         )
     if done:
         return "done"
@@ -491,7 +560,7 @@ def make_ready(target: Path, line: dict, with_harness: bool) -> None:
                 f"The harness's placeholders are now filled in {', '.join(filled)}: the project's name, repository and "
                 "branch as the folder and git show them, and a neutral value for what they do not show. Nothing waits "
                 "for this. Name it in your report, for the owner to correct. A rule the owner's request already gives "
-                "(a release rule, a tone) is yours to write there: alike in CLAUDE.md, AGENTS.md, .cursorrules and .windsurfrules."
+                "(a release rule, a tone) is yours to write there: alike in CLAUDE.md and AGENTS.md."
             )
         line["setup"] = set_up_harness(target, attention)
         identity = (run(["git", "-C", str(target), "config", "--get", key]).stdout.strip() for key in ("user.name", "user.email"))
@@ -686,6 +755,7 @@ def dispatch(args: argparse.Namespace) -> int:
     # The session-start hook reads this after a compaction, to remind the master and no other session here.
     # Written before the worker exists: a write that fails must not leave a running worker without its line.
     (state_dir() / "master").write_text(handle, encoding="utf-8")
+    full = context_notice()  # read before the worker exists as well
 
     model = launch_model(args.agent, model)  # what Orca starts
     started_at = time.time()
@@ -746,8 +816,8 @@ def dispatch(args: argparse.Namespace) -> int:
         print(json.dumps({**started, **registered}))
         return fail(f"register denied but worker {dispatch_id} is already running; stop it with `orca orchestration worker-stop`")
     # Orca's guide tells a coordinator to follow a receipt's `next`, so the step that must not be skipped goes there.
-    wait = f"keep one `ORCHESTRATION watch --run {receipt.get('runId')}` running in the background, then end your turn"
-    print(json.dumps({**started, **registered, "next": wait}))
+    wait = f"keep one `ORCHESTRATION watch --run {receipt.get('runId')}` running in the background"
+    print(json.dumps({**started, **registered, "next": f"{wait}. {full}" if full else f"{wait}, then end your turn"}))
     return 0
 
 
@@ -1420,6 +1490,47 @@ def compacted(args: argparse.Namespace) -> int:
     return 0
 
 
+CONTEXT_SHARE = 0.8  # of the window a session is compacted at: past it a master hands over before it takes on more
+
+
+def context_notice() -> str:
+    """Say that this session's context is nearly full, or "" below CONTEXT_SHARE and where it cannot be measured.
+
+    After a compaction a master writes its handoff from a summary, and this comes before one. Claude Code gives
+    every Bash call its session's id (CLAUDE_CODE_SESSION_ID). The tokens are those of the session's last turn as
+    Claude Code's status line counts them: input, cache writes and cache reads.
+    """
+    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", session_id):
+        return ""
+    # shortcut: the window is read from the variable (a plain token count) and the user's `autoCompactWindow` only.
+    # One set per model with /autocompact (`modelSettings`) or for one launch with --autocompact is not seen: read
+    # those once the owner uses them.
+    window: object = os.environ.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "")
+    used = 0
+    try:
+        if not str(window).isdigit():
+            settings = json.loads((Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8"))
+            window = settings.get("autoCompactWindow") if isinstance(settings, dict) else None
+        session = next((Path.home() / ".claude" / "projects").glob(f"*/{session_id}.jsonl"), None)
+        for entry in session_records(session) if session else []:
+            message = entry.get("message") if entry.get("type") == "assistant" and not entry.get("isSidechain") else None
+            usage = message.get("usage") if isinstance(message, dict) else None
+            if isinstance(usage, dict):
+                keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+                used = sum(count for key in keys if isinstance(count := usage.get(key), int)) or used  # a synthetic turn counts nothing
+    except (OSError, ValueError):
+        return ""
+    window = int(window) if isinstance(window, str) and window.isdigit() else window
+    if not isinstance(window, int) or isinstance(window, bool) or window <= 0 or used < CONTEXT_SHARE * window:
+        return ""
+    return (
+        f"This session's context holds {used:,} tokens, {used / window:.0%} of the {window:,} at which it is compacted. "
+        'Before more work, tell the owner that a handoff is due and write it (the master skill, "Hand over to a '
+        'successor"): after a compaction you would write it from a summary'
+    )
+
+
 BRIEF_CHARS = 4000  # Orca's brief names the dispatch ~1,200 characters in; a digest session that quotes it does so far later
 
 
@@ -2025,6 +2136,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.set_defaults(handler=probe_model)
 
     commands.add_parser("compacted").set_defaults(handler=compacted)  # internal: the plugin's session-start hook
+
+    sub = commands.add_parser("scope")  # internal: the review command compares a diff's files with a contract's `writes`
+    sub.add_argument("--contract", required=True)
+    sub.add_argument("--diff", required=True)
+    sub.set_defaults(handler=scope)
 
     args = parser.parse_args(argv)
     try:

@@ -174,6 +174,73 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(self.ledger()[1]["model_measured"], EFFICIENT)
         self.assertTrue(self.ledger()[1]["model_verified"])
 
+    def test_a_dispatch_from_a_nearly_full_session_says_that_a_handoff_is_due(self):
+        home, session = Path(os.environ["USERPROFILE"]) / ".claude", "0123abcd-0000-4000-8000-000000000000"
+        (home / "projects" / "a-folder").mkdir(parents=True)
+        (home / "settings.json").write_text('{"autoCompactWindow": 400000}', encoding="utf-8")
+
+        def notice(tokens, **environment):
+            # As Claude Code writes a turn: nearly all of the context is a cache read, and output is no part of it.
+            usage = {"input_tokens": 4, "cache_creation_input_tokens": 996, "cache_read_input_tokens": tokens - 1000, "output_tokens": 90000}
+            turns = [
+                {"type": "assistant", "message": {"usage": usage}},
+                {"type": "assistant", "isSidechain": True, "message": {"usage": {"input_tokens": 999999}}},  # a subagent's turn
+            ]
+            (home / "projects" / "a-folder" / f"{session}.jsonl").write_text("".join(json.dumps(turn) + "\n" for turn in turns), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": session, "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "", **environment}):
+                return orchestration.context_notice()
+
+        self.assertEqual(notice(319_999), "")
+        self.assertIn("320,000 tokens, 80% of the 400,000", notice(320_000))
+        self.assertEqual(notice(320_000, CLAUDE_CODE_AUTO_COMPACT_WINDOW="1000000"), "")  # the variable comes before the setting
+        self.assertEqual(notice(399_000, CLAUDE_CODE_SESSION_ID="no-session-of-this-machine"), "")  # nothing to measure
+        (home / "settings.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(notice(399_000), "")  # no window is known, so no share is claimed
+        (home / "settings.json").write_text('{"autoCompactWindow": 400000}', encoding="utf-8")
+        notice(340_000)
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": session, "CLAUDE_CODE_AUTO_COMPACT_WINDOW": ""}):
+            code, output = self.dispatch()
+        self.assertEqual(code, 0, output)
+        step = json.loads(output)["next"]
+        self.assertIn("watch --run run_test", step)
+        self.assertIn("85% of the 400,000", step)
+        self.assertIn("a handoff is due", step)
+        self.assertNotIn("end your turn", step)  # the handoff comes first
+
+    def test_scope_names_every_changed_file_that_the_contracts_writes_do_not_cover(self):
+        repo = self.work.parent / "scoped"
+        (repo / "src").mkdir(parents=True)
+        self.git(repo, "init", "-q")
+        for name in ("src/app.py", "notes.md", "old name.md", "한글.md"):
+            (repo / name).write_text(f"{name}\n" * 5, encoding="utf-8")
+        self.git(repo, "add", "-A")
+        self.git(repo, "commit", "-q", "-m", "base")
+        (repo / "src/app.py").write_text("changed\n", encoding="utf-8")
+        (repo / "한글.md").write_text("changed\n", encoding="utf-8")
+        self.git(repo, "mv", "old name.md", "new name.md")
+        self.git(repo, "rm", "-q", "notes.md")
+        (repo / "added.txt").write_text("new\n", encoding="utf-8")
+        # As the review command writes it: the diff against HEAD, then every new file against nothing.
+        parts = (["diff", "HEAD"], ["diff", "--no-index", "--", "/dev/null", "added.txt"])
+        diff = self.work / "change.diff"
+        diff.write_bytes(b"".join(subprocess.run(["git", "-C", str(repo), *part], capture_output=True).stdout for part in parts))
+
+        def scope(writes):
+            code, output = self.cli("scope", "--contract", self.contract(front=writes), "--diff", str(diff))
+            return code, json.loads(output.splitlines()[0])["outside"], output
+
+        code, outside, said = scope("writes: [src/, 한글.md, new name.md]\n")
+        self.assertEqual((code, outside), (2, ["added.txt", "notes.md", "old name.md"]), said)  # a rename changes the old path too
+        self.assertIn("outside the contract's `writes`: added.txt, notes.md, old name.md", said)
+        everything = "한글.md, new name.md, old name.md, notes.md, added.txt"
+        self.assertEqual(scope(f"writes: [src, {everything}]\n")[:2], (0, []))
+        self.assertEqual(scope(f"writes: [sr, {everything}]\n")[:2], (2, ["src/app.py"]))  # a folder, not the start of a name
+        self.assertEqual(scope("")[:2], (0, []))  # a contract without `writes` limits nothing by rule
+        diff.write_text("diff --git a/one b/two\nindex 1..2\n", encoding="utf-8")  # two paths, and no rename line names them
+        code, _, said = scope("writes: [src]\n")
+        self.assertEqual(code, 2, said)
+        self.assertIn("name no path this wrapper can read", said)
+
     def test_a_contract_that_still_runs_is_not_dispatched_again(self):
         self.assertEqual(self.dispatch()[0], 0)
         # After an Orca restart the report is missing, not the work. An open dispatch, an outcome this code does not
@@ -940,7 +1007,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertFalse(any("PROMPTS.md" in entry or "Double braces" in entry for entry in line["attention"]), line)
         self.assertEqual([name for name, content in tree(project).items() if b"{{" in content], ["PROMPTS.md"])
         self.assertIn("# Project Instructions: 새 project\n", (project / "CLAUDE.md").read_text(encoding="utf-8"))
-        self.assertEqual(len({(project / router).read_bytes() for router in ("CLAUDE.md", "AGENTS.md", ".cursorrules", ".windsurfrules")}), 1)
+        self.assertEqual((project / "AGENTS.md").read_bytes(), (project / "CLAUDE.md").read_bytes())
         add = self.repo_adds()[0]
         self.assertEqual((add[add.index("--path") + 1], add[add.index("--kind") + 1]), (str(project), "git"))
         before = tree(project)

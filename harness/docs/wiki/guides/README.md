@@ -27,7 +27,7 @@ A guide is an operating rule you follow repeatedly. Open questions and in-progre
 |---|---|---|
 | 1 | [01-onboarding](01-onboarding.md) | Starting point for people and new AI sessions |
 | 2 | [02-agentic-architecture](02-agentic-architecture.md) | Boundaries between `.agent`, `.planning`, and `docs/wiki` |
-| 3 | [03-host-runtime-and-hooks](03-host-runtime-and-hooks.md) | Runtime differences across Claude Code, Codex, Cursor, and generic hosts |
+| 3 | [03-host-runtime-and-hooks](03-host-runtime-and-hooks.md) | Runtime differences between Claude Code and Codex |
 | 4 | [04-gsd-llm-wiki-agent-flow](04-gsd-llm-wiki-agent-flow.md) | Criteria for splitting natural-language input between planning and wiki |
 | 5 | [05-decisions-and-postmortems](05-decisions-and-postmortems.md) | Criteria for ADRs, postmortems, and temp snapshots |
 | - | [maintenance](maintenance.md) | Stale guard and operational checks |

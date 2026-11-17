@@ -53,7 +53,6 @@ Examples to guard:
 ## Health Checklist
 
 - Routers point at `.agent/Instructions.md`, `.agent/Context.md`, `.agent/Memory.md`.
-- Cursor has `.cursor/rules/agentic-router.mdc` and `.cursor/mcp.json`.
 - Codex local files are ignored, but shared examples are tracked.
 - `.planning/` and `docs/wiki/` skeleton directories keep `.gitkeep`.
 - Important guide/ADR/postmortem changes get Review Gate Quiz.

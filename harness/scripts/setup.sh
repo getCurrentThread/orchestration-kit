@@ -41,7 +41,7 @@ fi
 echo ""
 echo "==> 2/4 Multi-host router verify"
 DRIFT=()
-for f in AGENTS.md .cursorrules .windsurfrules; do
+for f in AGENTS.md; do
   if [ ! -e "$f" ]; then
     DRIFT+=("$f (missing)")
   else
@@ -52,7 +52,7 @@ done
 if [ ${#DRIFT[@]} -eq 0 ]; then
   echo "  [OK] host instruction files in sync"
 else
-  echo "  [DRIFT] ${DRIFT[*]}: run: cp CLAUDE.md AGENTS.md .cursorrules .windsurfrules"
+  echo "  [DRIFT] ${DRIFT[*]}: run: cp CLAUDE.md AGENTS.md"
 fi
 
 # ============================================================================

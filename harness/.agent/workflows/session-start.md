@@ -28,7 +28,7 @@ Codex reads `AGENTS.md`. You can attach adapters and skills under Codex too, but
 
 ## Start order
 
-Read the host router first. Claude Code reads `CLAUDE.md`, Codex reads `AGENTS.md`, Cursor reads `.cursor/rules/agentic-router.mdc` with the legacy fallback `.cursorrules`, and Windsurf reads `.windsurfrules`. The four files `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, and `.windsurfrules` should hold the same content. Cursor's actual project-rule adapter is `.cursor/rules/agentic-router.mdc`, so do not claim `.cursorrules` alone guarantees the behavior.
+Read the host router first. Claude Code reads `CLAUDE.md` and Codex reads `AGENTS.md`. The two files should hold the same content.
 
 Next read `.agent/Instructions.md` for the behavior rules. Read `.agent/Context.md` for the product and current-decision digest. Read `.agent/Memory.md` for user preferences, recurring mistakes, the Review Gate Quiz, and operating rules such as postmortem/temp.
 

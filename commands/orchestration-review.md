@@ -100,6 +100,20 @@ If the PR is not found, stop with an error.
 wc -l < <DIFF>     # <LINES>
 ```
 
+**With `--contract`:** compare the files the diff changes with the contract's
+`writes`, by rule:
+
+```bash
+python -X utf8 -s -B "${CLAUDE_PLUGIN_ROOT}/scripts/orchestration.py" scope --contract <CONTRACT> --diff <DIFF>
+```
+
+It prints one JSON line. `outside` lists every changed file that no entry of
+`writes` covers: an entry covers the file it names and everything under the
+folder it names. `writes` is `null` for a contract that names none. Exit 2 means
+that files are outside or that the comparison could not be made, and its
+`orchestration:` line says which. Keep the result for the report and go on to
+Phase 2 either way.
+
 ## Phase 2 — INVOKE
 
 Call the Workflow tool. The workflow fails closed: it throws without `diffFile`
@@ -154,6 +168,10 @@ names, holds it whole under `result`. Read the `contract` rows from there.
   yours to check by running what the contract names, and the review has not
   cleared it. Without `--contract`, say that the change was not checked against
   any contract: the reviewers then see the diff only.
+- With `--contract`, name every file of `outside` before the findings: a change
+  outside the contract's `writes` blocks the result, whatever `verdict` says. If
+  that comparison could not be made, say so: the review is then no clean
+  approval. For a contract without `writes`, say that no file was compared.
 - List every `blocking` finding with file, severity, and evidence — these must
   clear before a commit. Findings tagged "could not be verified" stay in
   `blocking` by design; call them out as needing manual confirmation.

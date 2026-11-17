@@ -16,12 +16,11 @@ fail() { failures+=("$1"); echo "  [FAIL] $1"; }
 echo "==> mogui-agent-harness SSOT verify"
 
 required_files=(
-  CLAUDE.md AGENTS.md .cursorrules .windsurfrules
+  CLAUDE.md AGENTS.md
   .agent/Instructions.md .agent/Context.md .agent/Memory.md
   .agent/workflows/triple-crown.md
   .agent/loops/LOOP.md .agent/workflows/daily-triage.md
   .agents/skills/postmortem/SKILL.md .agents/skills/daily-triage/SKILL.md
-  .cursor/mcp.json .cursor/rules/agentic-router.mdc
   .claude/settings.json .mcp.json
   .claude/hooks/load-context.sh .claude/hooks/setup-check.sh .claude/hooks/memory-health.sh
   .codex/README.md .codex/hooks.example.json .codex/config.example.toml
@@ -42,14 +41,14 @@ for f in "${required_files[@]}"; do
   [[ -f "$f" ]] && ok "$f exists" || fail "$f missing"
 done
 
-routers=(CLAUDE.md AGENTS.md .cursorrules .windsurfrules)
+routers=(CLAUDE.md AGENTS.md)
 if [[ -f CLAUDE.md ]]; then
   drift=()
-  for f in AGENTS.md .cursorrules .windsurfrules; do
+  for f in AGENTS.md; do
     [[ -f "$f" ]] || continue
     cmp -s CLAUDE.md "$f" || drift+=("$f")
   done
-  [[ "${#drift[@]}" -eq 0 ]] && ok "4 host router files are in sync" || fail "host router drift: ${drift[*]}"
+  [[ "${#drift[@]}" -eq 0 ]] && ok "2 host router files are in sync" || fail "host router drift: ${drift[*]}"
 fi
 
 # GEMINI.md is retired as a synced host router. A thin compatibility shim that
@@ -90,17 +89,6 @@ if true; then
   ok "decision id scheme is date-author-slug (no width management needed)"
 fi
 
-if [[ -f .cursor/rules/agentic-router.mdc ]]; then
-  if grep -q ".agent/Instructions.md" .cursor/rules/agentic-router.mdc && \
-     grep -q ".agent/Context.md" .cursor/rules/agentic-router.mdc && \
-     grep -q ".agent/Memory.md" .cursor/rules/agentic-router.mdc && \
-     grep -q "alwaysApply: true" .cursor/rules/agentic-router.mdc; then
-    ok "Cursor project rule adapter points at .agent"
-  else
-    fail ".cursor/rules/agentic-router.mdc must alwaysApply and mention all .agent core files"
-  fi
-fi
-
 for f in "${routers[@]}"; do
   [[ -f "$f" ]] || continue
   for target in ".agent/Instructions.md" ".agent/Context.md" ".agent/Memory.md"; do
@@ -117,7 +105,7 @@ for f in .claude/hooks/*.sh .codex/hooks/*.sh scripts/*.sh; do
 done
 
 if command -v python3 >/dev/null 2>&1; then
-  for f in .claude/settings.json .mcp.json .codex/hooks.example.json .cursor/mcp.json; do
+  for f in .claude/settings.json .mcp.json .codex/hooks.example.json; do
     [[ -f "$f" ]] || continue
     # -I: without it `-m` puts the repository root first on the module path, and a json.py there runs here.
     python3 -I -m json.tool "$f" >/dev/null && ok "$f JSON parse" || fail "$f JSON parse failed"
@@ -165,7 +153,7 @@ stale_pattern+="|GEMINI\\.md|Gemini CLI|router 5종|5 host|5-host|다섯 router|
 # If the starter was derived from a specific repo, add that repo's retired product names and handles here to detect leftovers.
 # An empty generic starter has nothing to add. Example: stale_pattern+="|old-product|old-handle"
 stale_hits="$(grep -RInE "$stale_pattern" \
-  PROMPTS.md CLAUDE.md AGENTS.md .cursorrules .windsurfrules .cursor .agent .agents .claude .codex docs/wiki scripts 2>/dev/null \
+  PROMPTS.md CLAUDE.md AGENTS.md .agent .agents .claude .codex docs/wiki scripts 2>/dev/null \
   | grep -v "scripts/verify-agent-ssot.sh" \
   | grep -Ev "stale|옛|deprecated|superseded|현재 노출 tool이 아니므로|제거" || true)"
 if [[ -n "$stale_hits" ]]; then

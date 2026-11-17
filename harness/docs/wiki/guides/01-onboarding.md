@@ -23,8 +23,6 @@ code_refs:
     note: "Claude Code router."
   - file: AGENTS.md
     note: "Codex router."
-  - file: .cursor/rules/agentic-router.mdc
-    note: "Cursor project rule adapter."
 ---
 
 # Onboarding: Starting Point for People and New AI Sessions
@@ -53,10 +51,6 @@ Add project-specific dependency install commands to fit this repo.
 |---|---|
 | Claude Code | `CLAUDE.md`, `.claude/settings.json`, hooks |
 | Codex | `AGENTS.md`, `.codex/` local config |
-| Cursor | `.cursor/rules/agentic-router.mdc`, `.cursor/mcp.json`, `.cursorrules` fallback |
-| Windsurf/other | `.windsurfrules` or explicit prompt |
-
-Cursor does not run the Claude Code hook chain. `.cursor/rules/agentic-router.mdc` takes that role. This project rule adapter makes Cursor read the three `.agent` files. In a fresh Cursor chat, confirm which `.agent` files were read.
 
 ## When the User Says Anything at All
 

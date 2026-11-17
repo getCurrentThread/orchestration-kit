@@ -23,9 +23,9 @@ The plugin adds:
 - **No worker beside one the gate refused**: a worker the gate refuses at register already runs, so every dispatch
   is refused until Orca shows it settled. `override-hold --dispatch <id> --reason "<why>"` ends that hold on the
   owner's word, and only while Orca shows the refused worker's agent exited.
-- **Master succession**: a checked handoff, a successor launched in Orca, a lineage ledger, and the predecessor's terminal closed by Orca after a recorded `PASS`.
-- **Review workflow**: `/orchestration-kit:orchestration-review` fans a diff out to reviewers and verifies
-  every blocking finding.
+- **Master succession**: a dispatch line that says when the master's context is 80% of the way to its compaction, a checked handoff, a successor launched in Orca, a lineage ledger, and the predecessor's terminal closed by Orca after a recorded `PASS`.
+- **Review workflow**: `/orchestration-kit:orchestration-review` fans a diff out to reviewers, verifies
+  every blocking finding, and names every changed file outside the contract's `writes`.
 - **Repository harness**: the rules a worker follows inside one repository (`harness/`).
 
 ## How it works

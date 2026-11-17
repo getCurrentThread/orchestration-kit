@@ -3,7 +3,7 @@
 #
 # Verifies, statically and without network, that the Codex wiring under
 # .codex/ actually drives the same first-entry autonomous bootstrap contract
-# as the other three routers. This is the Codex-side counterpart to
+# as the Claude Code router. This is the Codex-side counterpart to
 # scripts/verify-agent-ssot.sh (which already checks that .codex/hooks/*
 # referenced in hooks.example.json exist and that hooks.example.json parses
 # as JSON). This script reuses that style but focuses specifically on the

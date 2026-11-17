@@ -148,8 +148,7 @@ To see what an install would do, run
   author's name into them and takes those changes into the commit. Git's `LF will be replaced by CRLF`
   warnings there are harmless.
 - Edit a filled placeholder only where the owner's request gives a rule that the neutral value does not
-  say. Then change `CLAUDE.md` and copy it over `AGENTS.md`, `.cursorrules` and `.windsurfrules`: the four
-  router files stay identical.
+  say. Then change `CLAUDE.md` and copy it over `AGENTS.md`: the two router files stay identical.
 
 Two workers at the same time in one project each need a worktree of their own, or they edit the same
 files. Run `prepare` first and deal with its `attention` until `setup` no longer `waits`, see that the
@@ -222,7 +221,8 @@ Each line of a watch names its step: run the command it names. What the lines do
 
   Leave `--in` out for your own checkout, and the base branch out for uncommitted changes. With
   `--contract`, one reviewer lists every requirement as `met`, `unmet` or `unjudged`. An `unmet` one
-  blocks. An `unjudged` one is what a diff cannot show, such as the output of a command: run those checks
+  blocks, and so does every changed file that the contract's `writes` does not cover, which the command
+  names by rule. An `unjudged` one is what a diff cannot show, such as the output of a command: run those checks
   yourself. Without `--contract`, a clean change that does not do what was asked passes. For a fix, name
   the fix contract, and give the commit the earlier attempt ended on in place of the base branch to show
   the reviewers the fix alone.
@@ -282,9 +282,11 @@ the restart.
 
 ## Hand over to a successor
 
-Do this when the owner asks, or once this session's context has been compacted: you then work from a
-summary of what you knew, and the plugin's session-start hook says so. A handoff is never automatic: tell
-the owner that one is due, then write it.
+Do this when the owner asks, when the `next` of a dispatch line says that this session's context is nearly
+full, or once the context has been compacted: you then work from a summary of what you knew, and the
+plugin's session-start hook says so. The dispatch line says it at 80% of the window the session is compacted
+at, read from `CLAUDE_CODE_AUTO_COMPACT_WINDOW` or from `autoCompactWindow` in `~/.claude/settings.json`;
+with neither set it says nothing. A handoff is never automatic: tell the owner that one is due, then write it.
 
 1. Fill in `handoff-template.md` and save it as `.orchestration/handoffs/<UTC timestamp>.md`. All eight
    sections are required: write `none` where there is nothing. `succeed` refuses a handoff the successor
