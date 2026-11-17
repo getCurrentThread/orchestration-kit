@@ -38,9 +38,10 @@ One dispatch, from its contract to the merge, and the four ways it can go differ
 
 ![The usual path: contract, check, start, register, work, verify, accept. A: the gate says no before the start, so no worker runs; fix what the line says and dispatch again. B: the gate says no after the start, so the worker already runs and nobody else starts until it is settled. C: the worker goes quiet; watch rings and resume carries on the same dispatch. D: the result is not what the contract asked; dispatch --follows sends the next attempt at the same task, three at most.](docs/dispatch-lifecycle-comic.svg)
 
-The master role moves to a successor session through a written handoff:
+The master role moves to a successor session through a written handoff. One is due when the owner asks, when a
+dispatch line says that the master's context is 80% of the way to its compaction, or once it has been compacted:
 
-![Six steps. The master's memory fills up, or the owner asks for a handover. The old master writes a handoff note. succeed checks the note and launches a successor in Orca. The successor reads the note and takes over the Run's mail. inherit records the result in the lineage. On PASS, Orca closes the old terminal, and workers keep running.](docs/succession-animated.svg)
+![Six steps. The dispatch command says that the master's memory is 80% full, so a handoff is due. The old master writes a handoff note. succeed checks the note and launches a successor in Orca. The successor reads the note and takes over the Run's mail. inherit records the result in the lineage. On PASS, Orca closes the old terminal, and workers keep running.](docs/succession-animated.svg)
 
 ## Requirements
 

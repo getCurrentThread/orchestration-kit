@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 452" width="960" height="452" role="img" aria-labelledby="t d">
 <title id="t">How the master role moves to a successor, in six steps</title>
-<desc id="d">An animation in six steps. 1: The master's memory fills up, or the owner asks for a handover. 2: The old master writes a handoff note of eight sections into .orchestration/handoffs. 3: Its succeed command checks the note and opens a successor master in a new Orca terminal. 4: The successor reads the note and takes over the Run's mail. 5: Its inherit command records the verdict in the lineage log. 6: On PASS, Orca closes the old terminal, and workers keep running.</desc>
+<desc id="d">An animation in six steps. 1: When the master's context holds 80% of the tokens at which it is compacted, its dispatch command says that a handoff is due; the owner can also ask for one. 2: The old master writes a handoff note of eight sections into .orchestration/handoffs. 3: Its succeed command checks the note and opens a successor master in a new Orca terminal. 4: The successor reads the note and takes over the Run's mail. 5: Its inherit command records the verdict in the lineage log. 6: On PASS, Orca closes the old terminal, and workers keep running.</desc>
 <style>
 :root{--bg:#fff;--panel:#f6f8fa;--box:#fff;--line:#d0d7de;--ink:#1f2328;--muted:#59636e;--kit:#0969da;--kit-soft:#ddf4ff;--ok:#1a7f37;--ok-soft:#dafbe1;--stop:#cf222e;--warn:#9a6700;--warn-soft:#fff8c5;--guard:#8c959f;--hat:#eac54f;--wb:#d0d7de}
 @media (prefers-color-scheme:dark){:root{--bg:#0d1117;--panel:#151b23;--box:#0d1117;--line:#3d444d;--ink:#f0f6fc;--muted:#9198a1;--kit:#1f6feb;--kit-soft:#111d2e;--ok:#238636;--ok-soft:#12261e;--stop:#f85149;--warn:#d29922;--warn-soft:#272115;--guard:#656c76;--hat:#bb8009;--wb:#3d444d}}
@@ -53,7 +53,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helveti
 .shutt{font-size:13px;font-weight:600;fill:var(--stop)}
 /* one loop of 20 s: six steps of 3 s, then the end state held. Without motion the end state is what shows. */
 .an{animation:20s infinite both}
-#bat{transform-origin:199px 184px;transform:scaleX(.2);fill:var(--stop);animation-name:bat}
+#bat{transform-origin:199px 184px;transform:scaleX(.8);fill:var(--warn);animation-name:bat}
 #mf{animation-name:mf}
 #note{transform:translate(700px,250px);animation-name:note}
 #nchk{animation-name:nchk}
@@ -71,7 +71,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helveti
 #c4{opacity:0;animation-name:c4}
 #c5{opacity:0;animation-name:c5}
 #c6{animation-name:c6}
-@keyframes bat{0%,2%{transform:scaleX(1);fill:var(--ok)}11%,100%{transform:scaleX(.2);fill:var(--stop)}}
+@keyframes bat{0%,2%{transform:scaleX(.3);fill:var(--ok)}11%,100%{transform:scaleX(.8);fill:var(--warn)}}
 @keyframes mf{0%,10%{opacity:0}12%,100%{opacity:1}}
 @keyframes note{0%,15%{opacity:0;transform:translate(222px,246px) scale(.4)}18%,21%{opacity:1;transform:translate(222px,246px) scale(1)}28%,45%{opacity:1;transform:translate(440px,262px) scale(1)}52%,97%{opacity:1;transform:translate(700px,250px) scale(1)}100%{opacity:0;transform:translate(700px,250px) scale(1)}}
 @keyframes nchk{0%,31%{opacity:0;transform:scale(2.4)}34%,100%{opacity:1;transform:scale(1)}}
@@ -181,9 +181,8 @@ text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helveti
 <circle class="dot" cx="77" cy="123" r="3.5"/>
 <text class="sm" x="320" y="127" text-anchor="end">terminal</text>
 <rect class="pp" x="196" y="176" width="36" height="16" rx="3"/>
-<rect class="eye" x="232" y="180" width="3" height="8" rx="1"/>
 <rect id="bat" class="an" x="199" y="179" width="30" height="10" rx="1.5"/>
-<text id="mf" class="sm an" x="215" y="208" text-anchor="middle">memory full</text>
+<text id="mf" class="sm an" x="214" y="208" text-anchor="middle">80% full</text>
 <use href="#master" x="150" y="298"/>
 </g>
 <g id="shut" class="an">
@@ -241,7 +240,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helveti
 <g id="c1" class="an">
 <circle class="kf" cx="56" cy="377" r="14"/>
 <text class="num" x="56" y="382" text-anchor="middle">1</text>
-<text class="capx" x="490" y="383" text-anchor="middle">The master's memory fills up, or the owner asks for a handover.</text>
+<text class="capx" x="490" y="383" text-anchor="middle">The <tspan class="m">dispatch</tspan> command says the master's memory is 80% full: a handoff is due.</text>
 <circle class="kf" cx="435" cy="430" r="4.5"/>
 </g>
 <g id="c2" class="an">
