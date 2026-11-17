@@ -115,8 +115,11 @@ class OrchestrationTest(unittest.TestCase):
         return project
 
     def started_model(self):
+        """The model of the last worker: Orca's own option for Codex, and in the command of a Claude worker's terminal."""
         start = self.worker_starts()[-1]
-        return start[start.index("--model") + 1]
+        if "--model" in start:
+            return start[start.index("--model") + 1]
+        return re.search(r" --model (\S+) ", self.created("terminal")[-1][-2]).group(1)
 
     def orca_calls(self):
         if not self.log.exists():
@@ -126,9 +129,16 @@ class OrchestrationTest(unittest.TestCase):
     def worker_starts(self):
         return [call for call in self.orca_calls() if call[:2] == ["orchestration", "worker-start"]]
 
-    def sends(self):
-        """The calls that reach a worker: text typed into a terminal, a wait on it, and mail to a dispatch."""
-        return [call for call in self.orca_calls() if call[:2] in (["terminal", "send"], ["terminal", "wait"], ["orchestration", "send"])]
+    def created(self, what):
+        """The terminals or worktrees that Orca was asked to make."""
+        return [call for call in self.orca_calls() if call[:2] == [what, "create"]]
+
+    def sends(self, since=0):
+        """The calls that reach a worker: text typed into a terminal, a wait on it, and mail to a dispatch.
+
+        since is the number of calls before the ones that count: a dispatch waits for the Claude it started.
+        """
+        return [call for call in self.orca_calls()[since:] if call[:2] in (["terminal", "send"], ["terminal", "wait"], ["orchestration", "send"])]
 
     def ledger(self):
         path = self.work / ".orchestration" / "dispatch-ledger.jsonl"
@@ -151,6 +161,64 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(self.started_model(), versioned(EFFICIENT))  # Orca gets the version the CLI resolves the family to
         self.assertEqual(rows[1]["model_measured"], EFFICIENT)  # the worker's versioned id, reduced to its family
         self.assertTrue(rows[1]["model_verified"])
+        # Claude is started in a terminal of its own, with the five-minute cache unless the dispatch says otherwise,
+        # and the task goes to that terminal: Orca's own start of Claude takes no setting.
+        made = self.created("terminal")[0]
+        five = f'--effort low --settings "{(ROOT / "config" / "cache-ttl-5m.json").as_posix()}"'
+        self.assertEqual(made[2:6], ["--worktree", "current", "--title", "Say READY"])
+        self.assertTrue(made[made.index("--command") + 1].endswith(five), made)
+        self.assertEqual(json.loads((ROOT / "config" / "cache-ttl-5m.json").read_text(encoding="utf-8")), {"promptCacheTtl": "5m"})
+        self.assertEqual(starts[0][starts[0].index("--terminal"):][:4], ["--terminal", "term_made", "--worktree", "current"])
+        self.assertNotIn("--agent", starts[0])
+        self.assertEqual(line["cache_ttl"], "5m")
+
+    def test_a_dispatch_may_ask_for_the_hour_long_cache_and_only_for_claude(self):
+        code, output = self.dispatch("--cache-ttl", "1h")
+        self.assertEqual(code, 0, output)
+        hour = (ROOT / "config" / "cache-ttl-1h.json").as_posix()
+        self.assertTrue(self.created("terminal")[0][-2].endswith(f'--settings "{hour}"'))
+        self.assertEqual(json.loads(Path(hour).read_text(encoding="utf-8")), {"promptCacheTtl": "1h"})
+        self.assertEqual(json.loads(output)["cache_ttl"], "1h")
+        calls = len(self.orca_calls())
+        code, output = self.dispatch("--cache-ttl", "1h", agent="codex", model=EFFICIENT)
+        self.assertEqual(code, 2, output)
+        self.assertIn("leave it out for codex", output)
+        self.assertEqual(len(self.orca_calls()), calls)  # refused before Orca or the gate is asked
+
+    def test_a_claude_that_does_not_come_up_gets_no_task_and_what_was_made_is_named(self):
+        self.git(self.work, "init", "-q")
+        self.git(self.work, "commit", "-q", "--allow-empty", "-m", "a commit")
+        cases = (
+            ("NO_WORKTREE", {"FAKE_ORCA_CREATE": "no worktree"}, ("--worktree", "new-child"), "orca worktree list"),
+            ("NO_TERMINAL", {"FAKE_ORCA_CREATE": "no terminal"}, ("--worktree", "new-child"), f"The worktree 00000000::{self.work.as_posix()}-contract was made"),
+            ("AGENT_NOT_READY", {"FAKE_ORCA_IDLE": "never"}, (), "orca terminal close --terminal term_made"),
+        )
+        for reason, environment, place, says in cases:
+            with self.subTest(reason=reason), mock.patch.dict(os.environ, environment):
+                code, output = self.dispatch(*place)
+                self.assertEqual(code, 2, output)
+                self.assertEqual(json.loads(output.splitlines()[0]), {"stage": "terminal", "allow": False, "reason": reason})
+                self.assertIn(says, output)
+        self.assertEqual(self.worker_starts(), [])  # no task was given
+        self.assertFalse(any(row.get("job_id") for row in self.ledger()))
+
+    def test_a_claude_that_asks_whether_to_trust_its_folder_is_told_yes_only_with_the_cursor_on_it(self):
+        typed = lambda: [call[4:-1] for call in self.sends() if call[:2] == ["terminal", "send"]]  # noqa: E731
+        # The question after the key down, as measured, and one whose cursor the key did not move.
+        on_yes = ["   No, exit", " ❯ Yes, I trust this folder", " Enter to confirm · Esc to cancel"]
+        on_no = [" ❯ No, exit", "   Yes, I trust this folder", " Enter to confirm · Esc to cancel"]
+        asks = {"FAKE_ORCA_IDLE": "trust", "FAKE_ORCA_TAIL": json.dumps(on_no)}
+        with mock.patch.dict(os.environ, asks), mock.patch.object(orchestration.time, "sleep"):
+            code, output = self.dispatch()
+        self.assertEqual(code, 2, output)
+        self.assertIn("agent-trust-workspace", output)  # the refusal says what Claude waits for
+        self.assertEqual(typed(), [["--text", "[B"]])  # and no Enter was sent
+        self.assertEqual(self.worker_starts(), [])
+        with mock.patch.dict(os.environ, {**asks, "FAKE_ORCA_TAIL": json.dumps(on_yes)}):
+            code, output = self.dispatch()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(typed()[1:], [["--text", "[B"], ["--enter"]])  # down to the yes, then Enter
+        self.assertEqual(len(self.worker_starts()), 1)
 
     def test_a_full_model_id_pins_its_version_and_is_gated_as_its_family(self):
         pinned = f"claude-{EFFICIENT}-1-1"
@@ -432,6 +500,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(code, 2, output)
         self.assertIn("worker-start refused", output)  # Orca's own answer is printed
         self.assertIn("worker-start failed; load Orca's recovery guide before retrying", output)
+        self.assertIn("orca terminal close --terminal term_made", output)  # the Claude that was started for it is named
         self.assertFalse(any(row.get("job_id") for row in self.ledger()))
 
     def test_a_start_that_orca_calls_done_without_a_dispatch_id_is_no_failure_and_registers_nothing(self):
@@ -475,14 +544,19 @@ class OrchestrationTest(unittest.TestCase):
         self.git(self.work, "commit", "-q", "--allow-empty", "-m", "a commit the remote does not have")
         code, output = self.dispatch("--worktree", "new-child")
         self.assertEqual(code, 0, output)
-        start = self.worker_starts()[-1]
         # Orca bases a new worktree on the remote's branch unless it is told, also in the master's own repository.
+        # No --repo: the repository is the one of the terminal that asks. No --no-parent: a child of its workspace.
         branch = self.git(self.work, "branch", "--show-current")
-        self.assertEqual(start[start.index("--worktree"):start.index("--worktree") + 4], ["--worktree", "new-child", "--base-branch", branch])
-        self.assertNotIn("--repo", start)  # the repository is the one of the terminal that asks
+        self.assertEqual(self.created("worktree"), [["worktree", "create", "--name", "contract", "--base-branch", branch, "--json"]])
+        # Claude starts in the worktree Orca made, and the task goes to that terminal there.
+        made = f"id:00000000::{self.work.as_posix()}-contract"
+        self.assertEqual(self.created("terminal")[-1][2:4], ["--worktree", made])
+        start = self.worker_starts()[-1]
+        self.assertEqual(start[start.index("--terminal"):][:4], ["--terminal", "term_made", "--worktree", made])
         os.environ["FAKE_ORCA_OUTCOME"] = "succeeded"  # the first dispatch of this contract has settled
         self.assertEqual(self.dispatch("--worktree", f"path:{self.work}")[0], 0)
-        self.assertNotIn("--base-branch", self.worker_starts()[-1])  # Orca refuses a base for a worktree that exists
+        self.assertEqual(len(self.created("worktree")), 1)  # none is made for a worktree that exists
+        self.assertEqual(self.created("terminal")[-1][2:4], ["--worktree", f"path:{self.work}"])
 
     def test_only_the_master_is_reminded_after_a_compaction(self):
         hook = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]["SessionStart"][0]
@@ -591,9 +665,10 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(len(self.orca_calls()), calls)  # and Orca is not asked about it
 
     def test_watch_reads_every_page_and_passes_on_the_step_orca_names(self):
+        os.environ["FAKE_ORCA_TERMINALS"] = "term_test,term_ctx_there"
         output = self.watch([
             {"runtime": "one", "workers": {}, "older": {"ctx_old": "working"}, "unread": 0},  # the open worker is on page two
-            {"runtime": "one", "workers": {}, "release": ["ctx_done"], "retained": ["ctx_own"], "unread": 0},
+            {"runtime": "one", "workers": {}, "release": ["ctx_done"], "retained": ["ctx_own"], "external": ["ctx_there", "ctx_shut"], "unread": 0},
         ])
         self.assertEqual(sum(call[:2] == ["orchestration", "worker-list"] for call in self.orca_calls()), 3)
         self.assertIn("has settled and its mail is read.\n", output)
@@ -602,6 +677,11 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("dispatch ctx_own has settled and Orca keeps its terminal open (user_requested)", output)
         self.assertIn("orca orchestration worker-release --dispatch ctx_own", output)
         self.assertNotIn("ctx_settled has settled and Orca keeps", output)
+        # Nor is the terminal that a dispatch started for a Claude worker. Its row says the same once it is closed,
+        # so only the one that is among Orca's live terminals is named.
+        self.assertIn("dispatch ctx_there has settled and its terminal stays open", output)
+        self.assertIn("orca terminal close --terminal term_ctx_there", output)
+        self.assertNotIn("ctx_shut has settled and its terminal", output)
         self.assertNotIn("Nothing to do", output)
 
     def test_watch_names_a_dispatch_that_did_not_pass_the_gate(self):
@@ -649,7 +729,7 @@ class OrchestrationTest(unittest.TestCase):
 
     def test_resume_brings_an_ended_session_back_in_its_own_terminal_and_tells_it_to_go_on(self):
         self.assertEqual(self.dispatch()[0], 0)
-        before = self.ledger()
+        before, calls = self.ledger(), len(self.orca_calls())
         os.environ["FAKE_ORCA_LIVENESS"] = "unverifiable"  # an agent that ended: Orca has no status of it
         code, output = self.resume()
         self.assertEqual(code, 0, output)
@@ -661,7 +741,7 @@ class OrchestrationTest(unittest.TestCase):
         )
         self.assertIn("watch --run run_test", line["next"])
         self.assertIn("end your turn", line["next"])
-        typed, waited, mail, notice = sends = self.sends()
+        typed, waited, mail, notice = sends = self.sends(calls)
         self.assertEqual([call[:2] for call in sends], [["terminal", "send"], ["terminal", "wait"], ["orchestration", "send"], ["terminal", "send"]])
         # Claude's own line, as printed, into the worker's own terminal: its handle, flags and folder are the worker's.
         self.assertEqual(typed[typed.index("--terminal") + 1], "term_worker_ctx_test")
@@ -703,6 +783,8 @@ class OrchestrationTest(unittest.TestCase):
             ("AGENT_NOT_PROVEN_ENDED", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", f"{line} {{session}} & calc", "PS C:/work>"])}, "may still run"),  # shell syntax
             ("AGENT_NOT_PROVEN_ENDED", {"FAKE_ORCA_TAIL": json.dumps([])}, "A terminal that is gone"),  # a released terminal reads as empty
             ("SESSION_MISMATCH", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", f"{line} {other}", "PS C:/work>"])}, "not the session file of ctx_test"),  # the reflector's
+            # Claude's line where a flag needed quotes, as measured: the session would come back without the worker's flags.
+            ("FLAGS_LOST", {"FAKE_ORCA_TAIL": json.dumps(["Resume this session with:", "claude --resume {session}", "PS C:/work>"])}, "--follows ctx_test"),
         )
         for reason, environment, says in cases:
             with self.subTest(reason=reason, environment=environment), mock.patch.dict(os.environ, {"FAKE_ORCA_LIVENESS": "unverifiable", **environment}):
@@ -710,7 +792,7 @@ class OrchestrationTest(unittest.TestCase):
                 self.assertEqual(code, 2, output)
                 self.assertEqual(json.loads(output.splitlines()[0]), {"stage": "resume", "allow": False, "dispatch": "ctx_test", "reason": reason})
                 self.assertIn(says, output)
-        self.assertEqual(self.sends(), [])  # not a character reached a terminal, and no mail was queued
+        self.assertEqual(self.sends(calls), [])  # not a character reached a terminal, and no mail was queued
         self.assertEqual(self.ledger(), before)
         self.assertEqual(len(self.worker_starts()), 1)
         self.assertGreater(len(self.orca_calls()), calls)  # Orca was asked, and the cases above did not need more than reads
@@ -720,7 +802,7 @@ class OrchestrationTest(unittest.TestCase):
                 path.unlink()
         with mock.patch.dict(os.environ, {"FAKE_ORCA_LIVENESS": "unverifiable"}):
             self.assertEqual(self.resume()[0], 2)
-        self.assertEqual(self.sends(), [])
+        self.assertEqual(self.sends(calls), [])
 
     def test_resume_needs_a_dispatch_that_this_workspaces_ledger_holds(self):
         code, output = self.resume()  # a folder that dispatched nothing
@@ -1178,11 +1260,10 @@ class OrchestrationTest(unittest.TestCase):
         code, output = self.dispatch(*own)
         self.assertEqual(code, 0, output)
         self.assertNotIn("starts without its rules", output)
-        start = self.worker_starts()[0]
         # Orca bases a new worktree on the remote's branch unless it is told: local commits would be missing.
-        place = start[start.index("--worktree"):start.index("--worktree") + 6]
         branch = self.git(project, "branch", "--show-current")
-        self.assertEqual(place, ["--worktree", "new-top-level", "--repo", f"path:{project}", "--base-branch", branch])
+        made = ["worktree", "create", "--name", "contract", "--repo", f"path:{project}", "--base-branch", branch, "--no-parent", "--json"]
+        self.assertEqual(self.created("worktree"), [made])
 
     def test_dispatch_state_names_the_six_states_every_command_reads(self):
         shown = lambda outcome: {"ok": True, "result": {"projection": {"outcome": outcome}}}  # noqa: E731

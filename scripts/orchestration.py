@@ -619,6 +619,97 @@ def prepare(args: argparse.Namespace) -> int:
     return 0 if line["allow"] else 2
 
 
+CACHE_TTLS = ("5m", "1h")  # what Claude Code's `promptCacheTtl` takes; a worker gets the first unless told otherwise
+TRUST_YES = "❯ Yes, I trust this folder"  # the second choice of Claude's question, with the cursor on it
+
+
+def trust_folder(terminal: str) -> bool:
+    """Say yes where Claude asks whether it may trust the folder it was started in, and say whether that was done.
+
+    Claude asks before its first session in a folder, and in a worktree before the first one in its repository: a
+    project directory that `--project` has just made ready. Orca answers for a Claude it starts itself and not for
+    one that a terminal's command line starts, whose wait it ends at once with `blockedReason: agent-trust-workspace`
+    (measured on Orca 1.4.261 with Claude Code 2.1.326 on 2026-11-17, in four folders new to Claude). The cursor
+    starts on `No, exit`: it is moved down, and Enter follows only once the screen shows it on the yes.
+    """
+    orca_answer("terminal", "send", "--terminal", terminal, "--text", "\x1b[B")
+    for _ in range(6):  # the screen followed the key at once when it was measured
+        tail = pluck(orca_result("terminal", "read", "--terminal", terminal), "terminal", "tail")
+        if isinstance(tail, list) and any(isinstance(line, str) and line.strip() == TRUST_YES for line in tail):
+            # Enter by Orca's own option: a carriage return as an argument is lost where `orca` is a batch file.
+            return pluck(orca_answer("terminal", "send", "--terminal", terminal, "--enter"), "result", "send", "accepted") is True
+        time.sleep(0.5)
+    return False
+
+
+def claude_terminal(place: list[str], name: str, title: str, model: str, effort: str, ttl: str) -> list[str]:
+    """Start Claude in a terminal of its own, and return the options with which `worker-start` gives it a task.
+
+    How long the prompt cache holds a session is chosen where the session starts, and `worker-start --agent` starts
+    Claude with a command line that takes nothing of ours. So this follows Orca's path for a command line of the
+    caller's (`orca skills get orchestration --reference references/low-level-topology.md`): a terminal that runs
+    it, a wait for its agent, then `worker-start --terminal`, for which a new worktree has to exist already.
+    `--settings` names a file that sets `promptCacheTtl` for that one process: no other session reads it, in the
+    same folder or elsewhere, and Claude's resume line repeats it, so `resume` keeps it.
+
+    Measured on Orca 1.4.259 with Claude Code 2.1.326 on 2026-11-17, three scratch workers: with the five-minute
+    file a session wrote its cache as `ephemeral_5m_input_tokens` only, while a worker that Orca started, and a
+    session started beside a five-minute worker in its folder, wrote `ephemeral_1h_input_tokens` only. Orca calls
+    such a terminal external and never closes it: the watch names the command that does.
+
+    Raise Refused where no idle Claude came of it. The message names what was made and is left.
+    """
+    if not re.fullmatch(r"[\w.\[\]-]+", model):  # it is typed into a shell
+        raise Refused("MODEL_NAME", f"model {model!r} holds a character that no model id has. Nothing was started")
+    selector, left = place[1], ""
+    if selector in ("new-top-level", "new-child"):
+        # Without --no-parent Orca makes the worktree a child of this terminal's workspace, and a name that is taken
+        # gets a number (both measured).
+        # shortcut: a repository that Orca is set to hold an agent back for until its setup has run is not waited
+        # for here, as `worker-start` does for a worktree it makes; wait for that setup once a project needs it.
+        made = orca_answer("worktree", "create", "--name", name, *place[2:], *(["--no-parent"] if selector == "new-top-level" else []))
+        worktree = pluck(made, "result", "worktree", "id")
+        if not isinstance(worktree, str) or not worktree:
+            raise Refused(
+                "NO_WORKTREE",
+                f"Orca named no new worktree for the worker (it said {json.dumps(made)[:300] if made else 'nothing'}), and "
+                f"nothing else was started. See with `orca worktree list` whether one named {name!r} was made, before you dispatch again",
+            )
+        selector = f"id:{worktree}"
+        left = f" The worktree {worktree} was made for this worker and holds no work: dispatch into it with --worktree \"{selector}\", or remove it."
+    # shortcut: this flag is the one Orca gives a Claude it starts on this machine (`claude.exe
+    # --dangerously-skip-permissions`, read from the process on 1.4.261): its default arguments for Claude, a setting
+    # that no command of its CLI shows and that the app keeps in a database of its own. Change it here when the owner
+    # changes it there.
+    # shortcut: where the plugin's folder has a space in its path the file needs its quotes, the worker runs as any
+    # other, and Claude's resume line then leaves every flag out, which `resume` refuses (FLAGS_LOST): such a worker
+    # is dispatched again. Give the file a path without a space once the plugin is installed under such a folder.
+    settings = (ROOT / "config" / f"cache-ttl-{ttl}.json").as_posix()
+    command = f'claude --dangerously-skip-permissions --model {model} --effort {effort} --settings "{settings}"'
+    made = orca_answer("terminal", "create", "--worktree", selector, "--title", title, "--command", command)
+    terminal = pluck(made, "result", "terminal", "handle")
+    if not isinstance(terminal, str) or not terminal:
+        raise Refused(
+            "NO_TERMINAL",
+            f"Orca named no terminal for the worker (it said {json.dumps(made)[:300] if made else 'nothing'}), so no task was "
+            f"given. See with `orca terminal list --worktree \"{selector}\" --json` whether one titled {title!r} was made, "
+            f"and close it before you dispatch again.{left}",
+        )
+    idle = ("terminal", "wait", "--terminal", terminal, "--for", "tui-idle", "--timeout-ms", "60000")
+    waited = orca_answer(*idle)
+    if pluck(waited, "result", "wait", "blockedReason") == "agent-trust-workspace" and trust_folder(terminal):
+        waited = orca_answer(*idle)
+    if pluck(waited, "result", "wait", "satisfied") is not True:
+        raise Refused(
+            "AGENT_NOT_READY",
+            f"Claude was started in terminal {terminal}, and Orca did not show it idle within 60 s (it said "
+            f"{json.dumps(waited)[:300] if waited else 'nothing'}), so no task was given to it. Read its screen with `orca "
+            f"terminal read --terminal {terminal} --screen`, tell the owner what it waits for, and close it with `orca "
+            f"terminal close --terminal {terminal}` before you dispatch again.{left}",
+        )
+    return ["--terminal", terminal, "--worktree", selector]
+
+
 def dispatch(args: argparse.Namespace) -> int:
     handle = os.environ.get("ORCA_TERMINAL_HANDLE")
     if not handle:
@@ -635,6 +726,8 @@ def dispatch(args: argparse.Namespace) -> int:
     problem = launch_problem(model, args.effort)
     if problem:
         return fail(problem)
+    if args.cache_ttl and args.agent != "claude":
+        return fail("--cache-ttl sets how long Claude Code's prompt cache holds a Claude worker's session; leave it out for codex")
     entry = family(model)  # what the gate and the ledger see
 
     contract = str(Path(args.contract).resolve())
@@ -758,16 +851,28 @@ def dispatch(args: argparse.Namespace) -> int:
     full = context_notice()  # read before the worker exists as well
 
     model = launch_model(args.agent, model)  # what Orca starts
+    title, cache_ttl, left = contract_title(contract), None, ""
+    launch = ["--agent", args.agent, "--model", model, "--effort", args.effort, *place]
+    if args.agent == "claude":
+        cache_ttl = args.cache_ttl or CACHE_TTLS[0]
+        try:
+            launch = claude_terminal(place, Path(contract).stem, title, model, args.effort, cache_ttl)
+        except Refused as refusal:
+            print(json.dumps({"stage": "terminal", "allow": False, "reason": refusal.reason}))
+            return fail(str(refusal))
+        left = (
+            f". Terminal {launch[1]} holds the Claude session that was started for this worker: unless the task reached "
+            f"it, close it with `orca terminal close --terminal {launch[1]}`"
+        )
     started_at = time.time()
     start = run([
         orca(), "orchestration", "worker-start", "--from", handle, "--spec-file", contract,
-        "--task-title", contract_title(contract), "--agent", args.agent, "--model", model, "--effort", args.effort,
-        *place, "--json", "--full",
+        "--task-title", title, *launch, "--json", "--full",
     ])
     if start.returncode != 0:
         # Never retried here: Orca's recovery guide says to read failedStage before any retry.
         print(start.stdout or start.stderr)
-        return fail("worker-start failed; load Orca's recovery guide before retrying")
+        return fail("worker-start failed; load Orca's recovery guide before retrying" + left)
     # From here on a worker runs: nothing below may raise on the shape of Orca's receipt.
     try:
         receipt = pluck(json.loads(start.stdout), "result")
@@ -810,7 +915,7 @@ def dispatch(args: argparse.Namespace) -> int:
     started = {
         "stage": "register", "dispatch": dispatch_id, "task": task_id, "run": receipt.get("runId"), "model": model,
         "workspace": folder, "origin": origin or task_id, "task_attempt": len(tried) + 1,
-        "token_budget": token_budget, "tokens_basis": tokens_basis,
+        "token_budget": token_budget, "tokens_basis": tokens_basis, "cache_ttl": cache_ttl,
     }
     if code != 0:
         print(json.dumps({**started, **registered}))
@@ -931,20 +1036,31 @@ def next_step(worker: dict) -> str | None:
     return subprocess.list2cmdline(["orca", *map(str, argv)])
 
 
-def kept_open(worker: dict) -> str | None:
+def kept_open(worker: dict, live: set | None = None) -> str | None:
     """Say that a settled worker still holds its terminal, if Orca shows that it does.
 
     Orca closes a finished worker by itself, but not one that got a worktree of its own: measured in 1.4.258,
-    it keeps that terminal (`resource.releaseState: retained`) and names no next step for it.
+    it keeps that terminal (`resource.releaseState: retained`) and names no next step for it. Nor does it close a
+    terminal that it did not start, as `dispatch` starts one for a Claude worker: measured in 1.4.259, the row calls
+    it `external`, `worker-release` leaves it, and the row still says so once the terminal is closed. So for such
+    a row live, the handles of Orca's live terminals, says whether it is there.
     """
     resource = worker.get("resource")
-    if not isinstance(resource, dict) or resource.get("releaseState") != "retained":
+    if not isinstance(resource, dict):
         return None
-    return (
-        f"watch: dispatch {worker['dispatchId']} has settled and Orca keeps its terminal open "
-        f"({resource.get('retainedReason')}). Once its work is merged or given up, release it: "
-        f"orca orchestration worker-release --dispatch {worker['dispatchId']}"
-    )
+    if resource.get("releaseState") == "retained":
+        return (
+            f"watch: dispatch {worker['dispatchId']} has settled and Orca keeps its terminal open "
+            f"({resource.get('retainedReason')}). Once its work is merged or given up, release it: "
+            f"orca orchestration worker-release --dispatch {worker['dispatchId']}"
+        )
+    if resource.get("ownershipState") == "external" and live and worker.get("terminal") in live:
+        return (
+            f"watch: dispatch {worker['dispatchId']} has settled and its terminal stays open: Orca closes none that it "
+            f"did not start itself ({resource.get('retainedReason')}). Once its work is merged or given up, close it: "
+            f"orca terminal close --terminal {worker['terminal']}"
+        )
+    return None
 
 
 def last_printed(worker: dict) -> float:
@@ -1042,7 +1158,9 @@ def watch(args: argparse.Namespace) -> int:
                 # Orca closes a finished worker by itself, unless it names a step for it: a terminal to release.
                 steps = [(worker["dispatchId"], next_step(worker)) for worker in listed_workers]
                 steps = [f"watch: Orca names a next step for dispatch {dispatch_id}: {step}" for dispatch_id, step in steps if step]
-                steps += [kept for kept in (kept_open(worker) for worker in listed_workers if not next_step(worker)) if kept]
+                external = any(pluck(worker, "resource", "ownershipState") == "external" for worker in listed_workers)
+                live = live_terminals() if external else None  # asked only where a row needs it
+                steps += [kept for kept in (kept_open(worker, live) for worker in listed_workers if not next_step(worker)) if kept]
                 # Orca answers a `send` to a settled dispatch by starting a new worker, which no gate has checked.
                 # Only where this workspace has dispatched: a watch elsewhere has no ledger to compare with.
                 # A DENY row has a job_id too (a register the gate refused): only ALLOW is passing, as in `attempts`.
@@ -1608,6 +1726,16 @@ def pluck(value: object, *path: str) -> object:
     return value
 
 
+def worker_agent(result: object) -> object:
+    """Return the agent of a worker from a `worker-show` answer.
+
+    For a worker that got its task in a terminal Orca did not start, as a Claude worker of `dispatch` does, Orca
+    leaves `startOptions.agent` null and names the agent it found there under `launch.effective` (measured on 1.4.259).
+    """
+    options = pluck(result, "worker", "startOptions")
+    return pluck(options, "agent") or pluck(options, "launch", "effective", "agent")
+
+
 def utc_seconds(text: object) -> float | None:
     """Return a time Orca writes as "YYYY-MM-DD HH:MM:SS" (UTC) in epoch seconds, or None for any other text."""
     try:
@@ -1638,7 +1766,7 @@ def settle(dispatch_id: str, said: list[str], runtime: object = None) -> str:
     else:
         if state in ("open", "unknown"):
             return "open"  # its count would be partial, and the gate keeps the first measured result
-        worktree, agent = pluck(result, "worker", "worktreeId"), pluck(result, "worker", "startOptions", "agent")
+        worktree, agent = pluck(result, "worker", "worktreeId"), worker_agent(result)
         since = utc_seconds(pluck(result, "dispatch", "dispatchedAt"))
         present = {
             "projection.outcome": state in SETTLED, "worker.worktreeId": isinstance(worktree, str),
@@ -1812,7 +1940,7 @@ def resumable(dispatch_id: str) -> dict[str, str]:
             f"Orca shows the agent of {dispatch_id} as live, so there is nothing to bring back. Talk to it with "
             f"`orca orchestration send --to dispatch:{dispatch_id}`, or wait for its report",
         )
-    agent = need("worker.startOptions.agent")
+    agent = worker_agent(result) or need("worker.startOptions.agent")
     if agent != "claude":
         raise Refused(
             "NOT_CLAUDE",
@@ -1852,6 +1980,18 @@ def resumable(dispatch_id: str) -> dict[str, str]:
             f"(first prompt naming it)" + (f"; skipped: {', '.join(skipped)}" if skipped else "") +
             ". The terminal may hold another session, so nothing was started. Read it with "
             f"`orca terminal read --terminal {terminal} --screen` and tell the owner",
+        )
+    if " --model " not in command:
+        # Measured with Claude Code 2.1.326 on 2026-11-17, one worker: started with a settings file whose path holds a
+        # space, which needs quotes, Claude printed `claude --resume <id>` and none of the flags it was started with.
+        raise Refused(
+            "FLAGS_LOST",
+            f"Claude's resume line in {terminal} holds none of the flags the worker was started with, so its session would "
+            "come back on the default model, asking for each permission, with a tier that no gate has checked. Claude "
+            "leaves the flags out when one of them needs quotes, as the settings file does where this plugin's folder has "
+            f"a space in its path. Nothing was started. Stop the dispatch with `orca orchestration worker-stop --dispatch "
+            f"{dispatch_id}`, close its terminal with `orca terminal close --terminal {terminal}`, and dispatch the task "
+            f"again with `ORCHESTRATION dispatch ... --follows {dispatch_id}`",
         )
     return {"terminal": terminal, "command": command, "session": session, "run": run_id}
 
@@ -2108,6 +2248,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument(
         "--project", metavar="DIRECTORY",
         help="the project directory the task is for: it is prepared as `prepare` does, and the worker starts in it",
+    )
+    sub.add_argument(
+        "--cache-ttl", choices=CACHE_TTLS,
+        help=f"how long Claude Code's prompt cache holds a Claude worker's session (default: {CACHE_TTLS[0]}); 1h is for "
+        "a worker that will sit idle for more than five minutes at a time, and costs more for each cache write",
     )
     sub.add_argument("--tier-override", metavar="REASON", help="pass one request over a tier fan-out cap")
     sub.add_argument(

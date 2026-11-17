@@ -21,6 +21,26 @@ the answer in two runs and 1.2 s after it in the third.
   FAKE_ORCA_CLOSE_LAG=<n>            a closed handle stays in the next <n> `terminal list` answers, then is left out: stands for
                                      the measured delay (about a second), counted in lists instead of time.
 
+Measured on 1.4.259 on 2026-11-17, for a Claude worker that `dispatch` starts in a terminal of its own: `terminal create
+--worktree <selector> --title <t> --command <c>` (`result.terminal`: handle, worktreeId), also with the selector `current`;
+`worktree create --name <n> --base-branch <b>` (`result.worktree`: id, path, branch, parentWorktreeId), which makes a child of
+the caller's workspace unless --no-parent is passed, and gives a name that is taken a number (`scratch-top-2`); `worker-start
+--terminal <handle> --worktree <selector>` for a Claude started by hand in that terminal (the receipt of `--agent`, with
+`effects` of kind worktree, setup, terminal and dispatch_input); `worker-show` of such a worker (`worker.startOptions`: agent
+null, terminal the handle, `launch.effective.agent` claude) and its `worker-list` row once settled (`resource`: ownershipState
+external, releaseState not_requested, retainedReason external_terminal), which stays so after `terminal close` of its terminal.
+The fake answers `worker-show` in that shape once a `worker-start --terminal` is in its log.
+
+Measured on 1.4.261 on 2026-11-17, for the same worker: the shapes of the paragraph above again, in five scratch dispatches
+(`current`, `new-child`, `--project`, and `--project` with `new-top-level`, where `worktree create` took `--repo
+path:<project>`), and `resume` of one of them. For a Claude that asks whether it may trust its folder, three terminals:
+`terminal wait --for tui-idle` answers within two seconds, ok true, `result.wait` {satisfied: false, status: running,
+blockedReason: agent-trust-workspace}; `terminal send --text <ESC>[B` without --enter (`result.send`: handle, accepted,
+bytesWritten 3, no `prompt`) moves the question's cursor down, and `terminal send --enter` without --text (bytesWritten 1)
+confirms the choice, after which the wait is satisfied.
+  FAKE_ORCA_IDLE=trust               `terminal wait` answers so until a `terminal send --enter` without text is in the log. The
+                                     question's screen is the test's to give, as FAKE_ORCA_TAIL.
+
 Switches that were NOT measured against Orca. Each makes the fake answer in a way a test needs and stands for a doubt the
 wrapper must survive, not for an answer Orca was seen to give:
   FAKE_ORCA_CLOSE=stale              `terminal close` of a listed handle answers terminal_handle_stale, as Orca did for an unknown
@@ -39,6 +59,8 @@ wrapper must survive, not for an answer Orca was seen to give:
   FAKE_ORCA_DECOY=<model>            after the worker's session file, a newer one in the same folder on that model whose first
                                      prompt does not name the dispatch: stands for a second worker there, or the reflector
                                      session that the owner's autoharness starts when a session ends.
+  FAKE_ORCA_CREATE=no terminal       `terminal create` exits 0 with a result that names no terminal; "no worktree" the same for
+                                     `worktree create`: stand for an answer of a shape this wrapper does not read.
   FAKE_ORCA_LAUNCH=no terminal       `agent launch` exits 0 and names no terminal (outcome kind `chat`).
   FAKE_ORCA_LAUNCH=not delivered     `agent launch` names a terminal and gives the prompt another outcome (`rejected`): stand for
                                      the two doubts the wrapper's launch check is written for.
@@ -73,7 +95,17 @@ def frame():
     return frames[min(sum(json.loads(call)[0] == "status" for call in calls), len(frames)) - 1]
 
 
-def worker(dispatch, activity, outcome="in_progress", step=None, retained=False):
+def logged():
+    """Every call of the test so far, this one included."""
+    return [json.loads(call) for call in Path(os.environ["FAKE_ORCA_LOG"]).read_text(encoding="utf-8").splitlines()]
+
+
+def in_terminal():
+    """Say whether the log holds a `worker-start --terminal`: a worker in a terminal that Orca did not start."""
+    return any(call[:2] == ["orchestration", "worker-start"] and "--terminal" in call for call in logged())
+
+
+def worker(dispatch, activity, outcome="in_progress", step=None, retained=False, external=False):
     liveness = {"verdict": "unverifiable" if activity == "unknown" else "live"}
     action = {"kind": step, "argv": ["orchestration", f"worker-{step}", "--dispatch", dispatch]} if step else {"kind": "none", "argv": []}
     projection = {
@@ -85,6 +117,9 @@ def worker(dispatch, activity, outcome="in_progress", step=None, retained=False)
         # The row says so. The projection has a `resource` too, which only says who owns it.
         projection["resource"] = {"state": "owned"}
         row["resource"] = {"ownershipState": "owned", "releaseState": "retained", "retainedReason": "user_requested"}
+    if external:
+        # 1.4.259, a settled worker in a terminal that Orca did not start: before and after that terminal is closed.
+        row["resource"] = {"ownershipState": "external", "releaseState": "not_requested", "retainedReason": "external_terminal"}
     return row
 
 
@@ -155,11 +190,12 @@ elif command == "orchestration worker-show":
         print(json.dumps({"ok": False, "error": {"code": "invalid_argument", "message": "no"}}))
         sys.exit(1)
     dispatched = Path(os.environ["FAKE_ORCA_LOG"] + ".dispatched")
+    agent, terminal = os.environ.get("FAKE_ORCA_AGENT", "claude"), f"term_worker_{dispatch}"
     result = {
         "dispatch": {"id": "ctx_test", "taskId": "task_test", "runId": "run_test", "status": "dispatched", "dispatchedAt": dispatched.read_text(encoding="utf-8") if dispatched.exists() else "2000-01-01 00:00:00"},
         "worker": {
-            "dispatchId": dispatch, "worktreeId": f"00000000::{folder}", "agentTerminalHandle": f"term_worker_{dispatch}",
-            "startOptions": {"agent": os.environ.get("FAKE_ORCA_AGENT", "claude")},
+            "dispatchId": dispatch, "worktreeId": f"00000000::{folder}", "agentTerminalHandle": terminal,
+            "startOptions": {"agent": None, "terminal": terminal, "launch": {"effective": {"agent": agent}}} if in_terminal() else {"agent": agent},
         },
         "projection": {"dispatchId": dispatch, "outcome": outcome, "liveness": {"verdict": os.environ.get("FAKE_ORCA_LIVENESS", "live")}},
         # Orca leaves the field out when it did not look, and gives null when it looked and found no wait. The
@@ -211,6 +247,18 @@ elif command in ("repo list", "repo add"):
         if repo not in repos:
             kept.write_text(json.dumps(repos + [repo]), encoding="utf-8")
         result = {"repo": repo}
+elif command == "terminal create":
+    result = {"terminal": {"handle": "term_made", "worktreeId": f"00000000::{folder}", "title": option("--title")}}
+    if os.environ.get("FAKE_ORCA_CREATE") == "no terminal":
+        result = {}
+elif command == "worktree create":
+    made = f"{folder}-{option('--name')}"
+    result = {"worktree": {
+        "id": f"00000000::{made}", "path": made, "branch": f"refs/heads/{option('--name')}",
+        "parentWorktreeId": None if "--no-parent" in arguments else f"00000000::{folder}",
+    }}
+    if os.environ.get("FAKE_ORCA_CREATE") == "no worktree":
+        result = {}
 elif command == "terminal read":
     # An ended agent: Claude's line on exit, with the session id of the worker the fake last started, and a prompt.
     if os.environ.get("FAKE_ORCA_READ") == "no answer":
@@ -234,12 +282,15 @@ elif command == "terminal send":
         print(json.dumps({"ok": False, "error": {"code": "terminal_not_writable", "message": "terminal_not_writable"}}))
         sys.exit(1)
     prompt = {"stages": ["input_accepted"], "provider": "claude", "observation": "supported"}
-    result = {"send": {"handle": option("--terminal"), "accepted": True, "bytesWritten": len(option("--text")) + 1, "prompt": prompt}, "mutation": {"replayed": False}}
+    result = {"send": {"handle": option("--terminal"), "accepted": True, "bytesWritten": len(option("--text") or "") + ("--enter" in arguments), "prompt": prompt}, "mutation": {"replayed": False}}
 elif command == "terminal wait":
     if os.environ.get("FAKE_ORCA_IDLE") == "never":  # what a wait that ran out of time answers, as measured
         print(json.dumps({"ok": False, "error": {"code": "timeout", "message": "timeout"}}))
         sys.exit(1)
-    result = {"wait": {"handle": option("--terminal"), "condition": option("--for"), "satisfied": True, "status": "running", "exitCode": None}}
+    wait = {"handle": option("--terminal"), "condition": option("--for"), "satisfied": True, "status": "running", "exitCode": None}
+    if os.environ.get("FAKE_ORCA_IDLE") == "trust" and not any(call[:2] == ["terminal", "send"] and "--text" not in call for call in logged()):
+        wait.update(satisfied=False, blockedReason="agent-trust-workspace")  # Claude asks whether to trust its folder
+    result = {"wait": wait}
 elif command == "orchestration send":
     result = {"messageId": "msg_test"}
 elif command == "terminal list":
@@ -293,6 +344,7 @@ elif command == "orchestration worker-list":
     # A settled worker is always listed too: a Run keeps the ones that have reported.
     settled = [worker("ctx_settled", "unknown", "succeeded")] + [worker(done, "unknown", "failed", "release") for done in frame().get("release", [])]
     settled += [worker(kept, "unknown", "succeeded", retained=True) for kept in frame().get("retained", [])]
+    settled += [worker(own, "unknown", "succeeded", external=True) for own in frame().get("external", [])]
     outcomes = frame().get("outcomes", {})
     result = {
         "workers": [worker(name, activity, outcomes.get(name, "in_progress")) for name, activity in frame()["workers"].items()] + settled,

@@ -68,6 +68,12 @@ there, on the owner's default model. It writes nothing into the folder.
 
    A new worktree starts from the branch that is checked out there and holds only what is committed on it:
    commit what the worker must see before you dispatch.
+
+   A Claude worker starts in a terminal of its own with Claude Code's five-minute prompt cache, the cheaper
+   one for a worker that keeps working. Add `--cache-ttl 1h` only for a worker you expect to sit idle for more
+   than five minutes at a time, such as one that waits for your answers. The line's `cache_ttl` says which it
+   got, and no other session is changed by it. Where Claude asks whether it may trust a folder that is new to
+   it, such as a project directory, the wrapper answers yes, as Orca does for a worker it starts itself.
 3. Read the JSON lines it prints. A refusal (exit 2) ends with an `orchestration: ...` line that says what
    to do:
    - Exit 0, `"stage": "register"`: the worker runs and is recorded. `dispatch` and `run` are the ids the
@@ -90,7 +96,10 @@ there, on the owner's default model. It writes nothing into the folder.
      dispatch, never on your own.
    - `Orca reported the start as done` (exit 2, Orca's answer printed): a worker may be running that no ledger
      row holds. Find it as the line says before you dispatch the contract again.
-   - `worker-start failed`: do not rerun it. Load Orca's recovery guide and read `failedStage` first.
+   - Exit 2 at `"stage": "terminal"`: Claude did not come up for the worker, and no task was given. The line
+     names the terminal or the new worktree that was made for it and what to do with each.
+   - `worker-start failed`: do not rerun it. Load Orca's recovery guide and read `failedStage` first. For a
+     Claude worker the line names the terminal that holds the Claude started for it.
 
 ### Models and effort
 
@@ -196,8 +205,9 @@ Each line of a watch names its step: run the command it names. What the lines do
   gone, Orca has failed the dispatch and nothing brings it back: dispatch the task again with `--follows`.
 - `... has settled and its mail is read`: nothing is left to wait for. What the workers reported is still
   yours to review and merge. A line that names a command for a settled dispatch (`Orca names a next step`,
-  `Orca keeps its terminal open`) is for after that: run the command only once you no longer need that
-  worker, its branch merged or given up. Its workspace and branch stay until the merge rule under "When a
+  `Orca keeps its terminal open`, `its terminal stays open`) is for after that: run the command only once
+  you no longer need that worker, its branch merged or given up. Every Claude worker gets the last of these:
+  Orca closes no terminal that `dispatch` started, so its idle session stays until you close it. Its workspace and branch stay until the merge rule under "When a
   worker reports" removes them; name every one that stays in your report.
 - The watch failed (`no usable answer`, `lists no dispatch`, `cannot be run`): nothing watches the Run,
   and waiting does not mend it. Fix what the line says and start the watch again.

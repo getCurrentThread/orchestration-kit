@@ -67,6 +67,11 @@ of `tests/fake_orca.py` and in `skills/master/SKILL.md`.
 `ctx` integrations, the pre-trust scripts, `/review-pr` with its four extra agents, the eight skills
 under `master-ops/skills/`, and the redaction scan.
 
+The pre-trust scripts stay out. Since plugin 0.16.0 `dispatch` starts a Claude worker with a command line of its
+own, and Orca answers Claude's question whether to trust a folder only for a Claude it starts itself. So the
+wrapper answers it: yes, in the worker's terminal, and only once the screen shows the cursor on that choice
+(`trust_folder` in `scripts/orchestration.py`; measured on Orca 1.4.261 with Claude Code 2.1.326 on 2026-11-17).
+
 Looked at again on 2026-11-13 and left out:
 
 - A tracker of its own for the card id (`--card-reason`, the `bd` lookup): `dispatch --follows` uses the

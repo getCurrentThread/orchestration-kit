@@ -13,6 +13,11 @@ The plugin adds:
   is appended to a ledger. A retry or a fix is one more attempt at the same task (`dispatch --follows`). A
   contract's `budget: [tokens=N]` is recorded at dispatch, and `report` measures each settled worker's usage
   from its session file and shows it against the budget.
+- **A prompt cache sized for a worker**: `dispatch` starts a Claude worker in a terminal of its own with
+  Claude Code's five-minute prompt cache, where a session that Orca starts gets the hour-long one, which costs
+  more for every cache write. `--cache-ttl 1h` is for a worker that will sit idle for longer. The setting is
+  that one session's: no other session reads it. Where Claude asks whether it may trust a folder that is new
+  to it, `dispatch` answers yes, as Orca does for a session it starts itself.
 - **Project directories made ready**: `dispatch --project <directory>` adds the directory to Orca and
   installs the repository harness before the worker starts, without overwriting anything.
 - **A wait that survives an Orca restart**: a read-only `watch` that wakes the master when Orca does not.
