@@ -1493,6 +1493,64 @@ def compacted(args: argparse.Namespace) -> int:
 CONTEXT_SHARE = 0.8  # of the window a session is compacted at: past it a master hands over before it takes on more
 
 
+def window_tokens(value: object, thousands: bool = False) -> int | None:
+    """Read an auto-compact window as Claude Code does, or None for `auto` and for what is no size.
+
+    A token count, alone or with `k` or `M`, is held between 100,000 and 1,000,000. `/autocompact` and
+    `--autocompact` read a bare 100 to 1000 as thousands; the variable and the settings read it as that many tokens.
+    """
+    found = None if isinstance(value, bool) else re.fullmatch(r"(\d+)([kKmM]?)", str(value).strip())
+    if not found:
+        return None
+    tokens = int(found[1]) * {"": 1, "k": 1_000, "m": 1_000_000}[found[2].lower()]
+    if thousands and not found[2] and 100 <= tokens <= 1_000:
+        tokens *= 1_000
+    return min(max(tokens, 100_000), 1_000_000)
+
+
+def launch_command() -> str:
+    """Return the command line this session's Claude Code was started with, or "" where its process is not found.
+
+    Measured with Claude Code 2.1.326 on Windows 11: above the wrapper come python.exe, bash.exe and claude.exe,
+    and asking takes a second. A build that does not run as claude.exe is not found, and its flags are not read.
+    """
+    script = (
+        f"$id = {os.getpid()}; for ($i = 0; $id -and $i -lt 16; $i++) {{ "
+        "$p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $id); if (-not $p) { break }; "
+        "if ($p.Name -eq 'claude.exe') { $p.CommandLine; break }; $id = $p.ParentProcessId }"
+    )
+    try:
+        asked = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return asked.stdout.decode("ascii", "replace")
+
+
+def compact_window(model: object) -> int | None:
+    """Return the tokens at which Claude Code compacts a session of a model, or None where nothing names a number.
+
+    Claude Code's order (https://code.claude.com/docs/en/model-config, "Set the auto-compact window", read on
+    2026-11-17): the variable, the `--autocompact` the session was started with, what `/autocompact` saved for the
+    model, then `autoCompactWindow`. `auto` is the window Claude Code tunes for a model, and no file holds it.
+    """
+    if (window := window_tokens(os.environ.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW", ""))) is not None:
+        return window
+    if flag := re.search(r'--autocompact(?:=|\s+)"?([^\s"]+)', launch_command()):
+        return window_tokens(flag[1], thousands=True)
+    # shortcut: only the user's settings file is read, and no window is capped at the model's own context window.
+    # Read the project, local and managed files and `--settings` once the owner sets a window in one of them.
+    settings = json.loads((Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    if not isinstance(settings, dict):
+        return None
+    # `/autocompact` saves under the model's name without a date or `[1m]`, and its entry comes before the key
+    # for every model.
+    models = settings.get("modelSettings")
+    saved = models.get(re.sub(r"(\[1m\]|-\d{8})+$", "", str(model))) if isinstance(models, dict) else None
+    if isinstance(saved, dict) and "autoCompactWindow" in saved:
+        return window_tokens(saved["autoCompactWindow"])
+    return window_tokens(settings.get("autoCompactWindow"))
+
+
 def context_notice() -> str:
     """Say that this session's context is nearly full, or "" below CONTEXT_SHARE and where it cannot be measured.
 
@@ -1503,26 +1561,21 @@ def context_notice() -> str:
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if not re.fullmatch(r"[0-9a-fA-F-]{36}", session_id):
         return ""
-    # shortcut: the window is read from the variable (a plain token count) and the user's `autoCompactWindow` only.
-    # One set per model with /autocompact (`modelSettings`) or for one launch with --autocompact is not seen: read
-    # those once the owner uses them.
-    window: object = os.environ.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "")
-    used = 0
+    used, model = 0, None
     try:
-        if not str(window).isdigit():
-            settings = json.loads((Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8"))
-            window = settings.get("autoCompactWindow") if isinstance(settings, dict) else None
         session = next((Path.home() / ".claude" / "projects").glob(f"*/{session_id}.jsonl"), None)
         for entry in session_records(session) if session else []:
             message = entry.get("message") if entry.get("type") == "assistant" and not entry.get("isSidechain") else None
             usage = message.get("usage") if isinstance(message, dict) else None
             if isinstance(usage, dict):
                 keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
-                used = sum(count for key in keys if isinstance(count := usage.get(key), int)) or used  # a synthetic turn counts nothing
+                if counted := sum(count for key in keys if isinstance(count := usage.get(key), int)):  # a synthetic turn counts nothing
+                    used, model = counted, message.get("model")
+        # No window is under 100,000 tokens, and reading the launch takes a second: a small session asks for none.
+        window = compact_window(model) if used >= CONTEXT_SHARE * 100_000 else None
     except (OSError, ValueError):
         return ""
-    window = int(window) if isinstance(window, str) and window.isdigit() else window
-    if not isinstance(window, int) or isinstance(window, bool) or window <= 0 or used < CONTEXT_SHARE * window:
+    if not window or used < CONTEXT_SHARE * window:
         return ""
     return (
         f"This session's context holds {used:,} tokens, {used / window:.0%} of the {window:,} at which it is compacted. "

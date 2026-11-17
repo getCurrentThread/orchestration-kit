@@ -177,14 +177,18 @@ class OrchestrationTest(unittest.TestCase):
     def test_a_dispatch_from_a_nearly_full_session_says_that_a_handoff_is_due(self):
         home, session = Path(os.environ["USERPROFILE"]) / ".claude", "0123abcd-0000-4000-8000-000000000000"
         (home / "projects" / "a-folder").mkdir(parents=True)
-        (home / "settings.json").write_text('{"autoCompactWindow": 400000}', encoding="utf-8")
+        started = mock.patch.object(orchestration, "launch_command", return_value='"C:\\bin\\claude.exe" --session-id 1')
+        self.addCleanup(started.stop)
+        started = started.start()
 
-        def notice(tokens, **environment):
+        def notice(tokens, settings='{"autoCompactWindow": 400000}', model="claude-fable-5-2", **environment):
+            (home / "settings.json").write_text(settings, encoding="utf-8")
             # As Claude Code writes a turn: nearly all of the context is a cache read, and output is no part of it.
             usage = {"input_tokens": 4, "cache_creation_input_tokens": 996, "cache_read_input_tokens": tokens - 1000, "output_tokens": 90000}
             turns = [
-                {"type": "assistant", "message": {"usage": usage}},
+                {"type": "assistant", "message": {"model": model, "usage": usage}},
                 {"type": "assistant", "isSidechain": True, "message": {"usage": {"input_tokens": 999999}}},  # a subagent's turn
+                {"type": "assistant", "message": {"model": "<synthetic>", "usage": {"input_tokens": 0}}},  # counts nothing
             ]
             (home / "projects" / "a-folder" / f"{session}.jsonl").write_text("".join(json.dumps(turn) + "\n" for turn in turns), encoding="utf-8")
             with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": session, "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "", **environment}):
@@ -192,11 +196,23 @@ class OrchestrationTest(unittest.TestCase):
 
         self.assertEqual(notice(319_999), "")
         self.assertIn("320,000 tokens, 80% of the 400,000", notice(320_000))
-        self.assertEqual(notice(320_000, CLAUDE_CODE_AUTO_COMPACT_WINDOW="1000000"), "")  # the variable comes before the setting
         self.assertEqual(notice(399_000, CLAUDE_CODE_SESSION_ID="no-session-of-this-machine"), "")  # nothing to measure
-        (home / "settings.json").write_text("{}", encoding="utf-8")
-        self.assertEqual(notice(399_000), "")  # no window is known, so no share is claimed
-        (home / "settings.json").write_text('{"autoCompactWindow": 400000}', encoding="utf-8")
+        self.assertEqual(notice(399_000, settings="{}"), "")  # no window is known, so no share is claimed
+        # What /autocompact saved for the session's model comes before the window of every model.
+        saved = '{"autoCompactWindow": 400000, "modelSettings": {"claude-fable-5": {"autoCompactWindow": 100000}, "claude-fable-5-2": {"autoCompactWindow": %s}}}'
+        self.assertEqual(notice(399_000, settings=saved % 500000), "")
+        self.assertIn("80% of the 500,000", notice(400_000, settings=saved % 500000, model="claude-fable-5-2-20260801[1m]"))
+        self.assertIn("of the 400,000", notice(399_000, settings=saved % 500000, model="claude-opus-5-5"))  # nothing saved for it
+        self.assertEqual(notice(999_000, settings=saved % '"auto"'), "")  # the window Claude Code tunes is no number here
+        # The --autocompact of this launch comes before every setting, and the variable before the flag.
+        started.return_value = '"C:\\bin\\claude.exe" --autocompact 300 --session-id 1'
+        self.assertIn("80% of the 300,000", notice(240_000))  # a bare 300 is 300 thousand for the flag
+        started.return_value = "claude.exe --autocompact=auto"
+        self.assertEqual(notice(999_000), "")
+        self.assertIn("80% of the 200,000", notice(160_000, CLAUDE_CODE_AUTO_COMPACT_WINDOW="200k"))
+        self.assertIn("of the 100,000", notice(90_000, CLAUDE_CODE_AUTO_COMPACT_WINDOW="200"))  # 200 tokens: the minimum applies
+        started.return_value = "claude.exe"
+        self.assertIn("of the 400,000", notice(340_000, CLAUDE_CODE_AUTO_COMPACT_WINDOW="soon"))  # no size, so it is ignored
         notice(340_000)
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": session, "CLAUDE_CODE_AUTO_COMPACT_WINDOW": ""}):
             code, output = self.dispatch()

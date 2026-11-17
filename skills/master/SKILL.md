@@ -285,8 +285,10 @@ the restart.
 Do this when the owner asks, when the `next` of a dispatch line says that this session's context is nearly
 full, or once the context has been compacted: you then work from a summary of what you knew, and the
 plugin's session-start hook says so. The dispatch line says it at 80% of the window the session is compacted
-at, read from `CLAUDE_CODE_AUTO_COMPACT_WINDOW` or from `autoCompactWindow` in `~/.claude/settings.json`;
-with neither set it says nothing. A handoff is never automatic: tell the owner that one is due, then write it.
+at. It reads that window in Claude Code's order: `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, the `--autocompact` the
+session was started with, what `/autocompact` saved for the session's model, then `autoCompactWindow`, the
+last two from `~/.claude/settings.json`. Where none of them names a number, as with `auto`, it says nothing.
+A handoff is never automatic: tell the owner that one is due, then write it.
 
 1. Fill in `handoff-template.md` and save it as `.orchestration/handoffs/<UTC timestamp>.md`. All eight
    sections are required: write `none` where there is nothing. `succeed` refuses a handoff the successor
