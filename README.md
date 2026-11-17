@@ -18,6 +18,10 @@ The plugin adds:
   more for every cache write. `--cache-ttl 1h` is for a worker that will sit idle for longer. The setting is
   that one session's: no other session reads it. Where Claude asks whether it may trust a folder that is new
   to it, `dispatch` answers yes, as Orca does for a session it starts itself.
+- **A Claude worker kept inside its folder**: the same settings file makes the worker's file tools (`Write`,
+  `Edit`, `NotebookEdit`) refuse any path outside the folder it runs in, and any `.claude/settings.json`. Its own
+  scratchpad stays writable. Shell commands are not limited, nor is a Codex worker, and the sandbox that would
+  limit them does not run on native Windows.
 - **Project directories made ready**: `dispatch --project <directory>` adds the directory to Orca and
   installs the repository harness before the worker starts, without overwriting anything.
 - **A wait that survives an Orca restart**: a read-only `watch` that wakes the master when Orca does not.

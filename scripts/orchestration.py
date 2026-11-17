@@ -652,6 +652,18 @@ def claude_terminal(place: list[str], name: str, title: str, model: str, effort:
     `--settings` names a file that sets `promptCacheTtl` for that one process: no other session reads it, in the
     same folder or elsewhere, and Claude's resume line repeats it, so `resume` keeps it.
 
+    The same file sets `permissions.blockWritesOutsideWorkingDirectories`, which a worker started with
+    `--dangerously-skip-permissions` lacks: its `Write`, `Edit` and `NotebookEdit` refuse a path outside the folder it
+    runs in, and any `.claude/settings.json`, in the folder too. It needs Claude Code 2.1.314 or later and leaves the
+    session's scratchpad, plan files and the auto memory's `.md` files writable. It does not limit shell commands, MCP
+    tools or what a hook runs, and the sandbox that would limit a shell command does not run on native Windows
+    (https://code.claude.com/docs/en/settings-reference#permissions-blockwritesoutsideworkingdirectories). Both keys are
+    in one file because two `--settings` flags do not add up: only the last counts (measured with the cache's file
+    first and the block's second: the write outside was refused and the cache was written as one hour only). Measured
+    on Claude Code 2.1.326 on 2026-11-18, headless and in an Orca terminal alike: a `Write` outside the folder was
+    refused, one inside it passed (`data.json`, `.claude-plugin/plugin.json` and `hooks/hooks.json` too), and the cache
+    was written as `ephemeral_5m_input_tokens` only.
+
     Measured on Orca 1.4.259 with Claude Code 2.1.326 on 2026-11-17, three scratch workers: with the five-minute
     file a session wrote its cache as `ephemeral_5m_input_tokens` only, while a worker that Orca started, and a
     session started beside a five-minute worker in its folder, wrote `ephemeral_1h_input_tokens` only. Orca calls
@@ -684,7 +696,10 @@ def claude_terminal(place: list[str], name: str, title: str, model: str, effort:
     # shortcut: where the plugin's folder has a space in its path the file needs its quotes, the worker runs as any
     # other, and Claude's resume line then leaves every flag out, which `resume` refuses (FLAGS_LOST): such a worker
     # is dispatched again. Give the file a path without a space once the plugin is installed under such a folder.
-    settings = (ROOT / "config" / f"cache-ttl-{ttl}.json").as_posix()
+    # The flags were also lost for a path of about 130 characters without a space (Claude printed `claude --resume
+    # <id>` alone; the cause was not isolated, the length is an estimate), but not for
+    # `C:/Users/admin/okit-probe-scratch/config/worker-settings-5m.json`, nor for today's path.
+    settings = (ROOT / "config" / f"worker-settings-{ttl}.json").as_posix()
     command = f'claude --dangerously-skip-permissions --model {model} --effort {effort} --settings "{settings}"'
     made = orca_answer("terminal", "create", "--worktree", selector, "--title", title, "--command", command)
     terminal = pluck(made, "result", "terminal", "handle")

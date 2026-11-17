@@ -164,10 +164,13 @@ class OrchestrationTest(unittest.TestCase):
         # Claude is started in a terminal of its own, with the five-minute cache unless the dispatch says otherwise,
         # and the task goes to that terminal: Orca's own start of Claude takes no setting.
         made = self.created("terminal")[0]
-        five = f'--effort low --settings "{(ROOT / "config" / "cache-ttl-5m.json").as_posix()}"'
+        five = f'--effort low --settings "{(ROOT / "config" / "worker-settings-5m.json").as_posix()}"'
         self.assertEqual(made[2:6], ["--worktree", "current", "--title", "Say READY"])
         self.assertTrue(made[made.index("--command") + 1].endswith(five), made)
-        self.assertEqual(json.loads((ROOT / "config" / "cache-ttl-5m.json").read_text(encoding="utf-8")), {"promptCacheTtl": "5m"})
+        self.assertEqual(
+            json.loads((ROOT / "config" / "worker-settings-5m.json").read_text(encoding="utf-8")),
+            {"promptCacheTtl": "5m", "permissions": {"blockWritesOutsideWorkingDirectories": True}},
+        )
         self.assertEqual(starts[0][starts[0].index("--terminal"):][:4], ["--terminal", "term_made", "--worktree", "current"])
         self.assertNotIn("--agent", starts[0])
         self.assertEqual(line["cache_ttl"], "5m")
@@ -175,9 +178,12 @@ class OrchestrationTest(unittest.TestCase):
     def test_a_dispatch_may_ask_for_the_hour_long_cache_and_only_for_claude(self):
         code, output = self.dispatch("--cache-ttl", "1h")
         self.assertEqual(code, 0, output)
-        hour = (ROOT / "config" / "cache-ttl-1h.json").as_posix()
+        hour = (ROOT / "config" / "worker-settings-1h.json").as_posix()
         self.assertTrue(self.created("terminal")[0][-2].endswith(f'--settings "{hour}"'))
-        self.assertEqual(json.loads(Path(hour).read_text(encoding="utf-8")), {"promptCacheTtl": "1h"})
+        self.assertEqual(
+            json.loads(Path(hour).read_text(encoding="utf-8")),
+            {"promptCacheTtl": "1h", "permissions": {"blockWritesOutsideWorkingDirectories": True}},
+        )
         self.assertEqual(json.loads(output)["cache_ttl"], "1h")
         calls = len(self.orca_calls())
         code, output = self.dispatch("--cache-ttl", "1h", agent="codex", model=EFFICIENT)
