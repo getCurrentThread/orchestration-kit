@@ -247,6 +247,9 @@ Each line of a watch names its step: run the command it names. What the lines do
   A worker that failed is dispatched again the same way. `--follows` takes any earlier dispatch of the task
   and makes this one its next attempt; `ORCHESTRATION report` lists every task with more than one. Do not
   make the fixes yourself unless the owner gave that work to you.
+- A finding that can only be fixed outside the contract's `writes` is not this worker's to fix: a fix
+  contract keeps the same `writes`. Name it in your report as work for a contract of its own, and where
+  such a finding blocks, leave the result unaccepted until the owner has said how the contract changes.
 - `orca orchestration send --to dispatch:<id> --subject "<topic>" --body "<message>"` is for a worker that
   is still working: it gets the message when its current turn ends.
 - Before a `send` to a worker that has gone quiet, look at its dispatch (`ORCHESTRATION status`). To one whose agent has ended it is kept as mail and reaches nobody until the session runs
