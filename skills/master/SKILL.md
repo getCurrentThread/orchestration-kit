@@ -62,7 +62,7 @@ there, on the owner's default model. It writes nothing into the folder.
    |---|---|
    | Your own workspace | nothing |
    | A project directory the task is for | `--project <directory>` |
-   | A worktree of its own in that project, which two workers at once each need | `--project <directory> --worktree new-top-level` |
+   | A worktree of its own in that project | `--project <directory> --worktree new-top-level` |
    | A workspace Orca already shows, such as an earlier worker's | `--worktree path:<folder>` |
    | A new worktree in your own repository | `--worktree new-top-level` or `new-child` |
 
@@ -72,8 +72,7 @@ there, on the owner's default model. It writes nothing into the folder.
    A Claude worker starts in a terminal of its own with Claude Code's five-minute prompt cache, the cheaper
    one for a worker that keeps working. Add `--cache-ttl 1h` only for a worker you expect to sit idle for more
    than five minutes at a time, such as one that waits for your answers. The line's `cache_ttl` says which it
-   got, and no other session is changed by it. Where Claude asks whether it may trust a folder that is new to
-   it, such as a project directory, the wrapper answers yes, as Orca does for a worker it starts itself.
+   got.
 
    A Claude worker's `Write`, `Edit` and `NotebookEdit` refuse a path outside the folder it runs in, and any
    `.claude/settings.json`. Its own scratchpad stays writable, and shell commands are not limited. A contract
@@ -299,10 +298,8 @@ the restart.
 Do this when the owner asks, when the `next` of a dispatch line says that this session's context is nearly
 full, or once the context has been compacted: you then work from a summary of what you knew, and the
 plugin's session-start hook says so. The dispatch line says it at 80% of the window the session is compacted
-at. It reads that window in Claude Code's order: `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, the `--autocompact` the
-session was started with, what `/autocompact` saved for the session's model, then `autoCompactWindow`, the
-last two from `~/.claude/settings.json`. Where none of them names a number, as with `auto`, it says nothing.
-A handoff is never automatic: tell the owner that one is due, then write it.
+at, read as Claude Code reads it; where no setting names a number, as with `auto`, it says nothing. A
+handoff is never automatic: tell the owner that one is due, then write it.
 
 1. Fill in `handoff-template.md` and save it as `.orchestration/handoffs/<UTC timestamp>.md`. All eight
    sections are required: write `none` where there is nothing. `succeed` refuses a handoff the successor

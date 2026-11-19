@@ -717,7 +717,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("cannot be run", self.watch([], ends=2))
 
     def test_watch_never_reads_an_answer_it_does_not_know_as_settled(self):
-        # Each of these used to end the watch with "every dispatch has settled", and the master stopped waiting.
+        # Read as "every dispatch has settled", each of these would end the watch and the master would stop waiting.
         for unusable, says in (
             ({"renamed": True}, "`workers` is not in the shape this wrapper reads"),
             ({"not_json": True}, "unknown option '--full'"),

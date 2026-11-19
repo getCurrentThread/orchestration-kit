@@ -295,7 +295,7 @@ class HarnessTest(unittest.TestCase):
             "GIT_AUTHOR_EMAIL": "tester@example.invalid", "GIT_COMMITTER_NAME": "tester", "GIT_COMMITTER_EMAIL": "tester@example.invalid",
         }
         said = self.git("commit", "-q", "-m", "Add pages", **identity)
-        # A failed updater exits 1, which used to be read as "bumped": the page is named as left alone instead.
+        # A failed updater exits 1, which is not "bumped": the page is named as left alone.
         self.assertIn(b"docs/latin1.md (front matter left as it is", said)
         self.assertNotIn(b"  - docs/latin1.md\n", said)
         self.assertEqual(self.git("show", "HEAD:docs/latin1.md"), unreadable)
@@ -304,7 +304,7 @@ class HarnessTest(unittest.TestCase):
         for name, content in pages.items():
             committed = self.git("show", f"HEAD:{name}")
             self.assertRegex(committed, rb"updated_at: 20\d\d-\d\d-\d\d\r?\n", name)
-            self.assertNotIn(b"2020-01-01", committed, name)  # a name that is not ASCII used to be skipped
+            self.assertNotIn(b"2020-01-01", committed, name)  # a page whose name is not ASCII is dated too
             # The page keeps the line endings it had: a text-mode write on Windows turned LF into CRLF.
             self.assertEqual(re.sub(rb"updated_at: [0-9-]+", b"updated_at: 2020-01-01", committed), content, name)
 
