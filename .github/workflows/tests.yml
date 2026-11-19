@@ -21,3 +21,24 @@ jobs:
         run: python -X utf8 -s -B -c "import shutil, sys; sys.path.insert(0, 'scripts'); import harness; assert harness.git_bash(), 'no Git Bash'; assert shutil.which('node'), 'no node'"
       - name: Tests
         run: python -X utf8 -s -B -m unittest discover -s tests -v
+
+  version:
+    # An install from GitHub gets a new copy only when `version` in the plugin's manifest changes (CLAUDE.md).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the commit `master` was at before the push is compared with
+      - name: A push that changes what an install runs changes the version
+        shell: bash
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          git cat-file -e "$BEFORE^{commit}" || { echo "cannot read $BEFORE, the commit master was at before the push"; exit 1; }
+          git diff --quiet "$BEFORE" HEAD -- . ':!README.md' ':!docs' ':!tests' ':!.github' ':!CLAUDE.md' && exit 0
+          old=$(git show "$BEFORE:.claude-plugin/plugin.json" | grep '"version"')
+          new=$(grep '"version"' .claude-plugin/plugin.json)
+          [ "$old" != "$new" ] && exit 0
+          echo "master changed what an install runs since $BEFORE, and the version is still $new"
+          exit 1
